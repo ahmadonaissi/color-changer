@@ -451,18 +451,37 @@
     }, 50);
   });
 
-  // ---- DOWNLOAD ----
-  $('#downloadBtn').addEventListener('click', () => {
+  // ---- DOWNLOAD (save-as dialog, user picks location) ----
+  $('#downloadBtn').addEventListener('click', async () => {
     const job = queue.find(j => j.id === activeJobId);
     if (!job || !job.result) return;
-    const link = document.createElement('a');
-    link.download = `${job.name.replace(/[^a-zA-Z0-9 _-]/g, '')}.png`;
-    link.href = job.result.toDataURL('image/png');
-    link.click();
-    toast('Downloaded!');
+    const safeName = job.name.replace(/[^a-zA-Z0-9 _-]/g, '') || 'image';
+    const blob = await new Promise(r => job.result.toBlob(r, 'image/png'));
+
+    if ('showSaveFilePicker' in window) {
+      try {
+        const handle = await window.showSaveFilePicker({
+          suggestedName: `${safeName}.png`,
+          types: [{ description: 'PNG Image', accept: { 'image/png': ['.png'] } }]
+        });
+        const writable = await handle.createWritable();
+        await writable.write(blob);
+        await writable.close();
+        toast('Saved!');
+      } catch (err) {
+        if (err.name !== 'AbortError') toast('Save failed: ' + err.message);
+      }
+    } else {
+      const link = document.createElement('a');
+      link.download = `${safeName}.png`;
+      link.href = URL.createObjectURL(blob);
+      link.click();
+      URL.revokeObjectURL(link.href);
+      toast('Downloaded!');
+    }
   });
 
-  // ---- SAVE TO FOLDER ----
+  // ---- CREATE FOLDER (name a folder, auto-saves into it) ----
   $('#saveFolderBtn').addEventListener('click', () => {
     const job = queue.find(j => j.id === activeJobId);
     if (!job) return;
@@ -477,19 +496,18 @@
   $('#confirmSave').addEventListener('click', async () => {
     const job = queue.find(j => j.id === activeJobId);
     if (!job || !job.result) return;
-    const folderName = $('#folderNameInput').value.trim() || job.name;
+    const folderName = ($('#folderNameInput').value.trim() || job.name).replace(/[^a-zA-Z0-9 _-]/g, '');
     $('#saveModal').classList.remove('visible');
 
     if ('showDirectoryPicker' in window) {
       try {
         if (!baseDirHandle) {
           baseDirHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
+          toast('Base folder set. Future saves go here automatically.');
         }
-        const subDir = await baseDirHandle.getDirectoryHandle(
-          folderName.replace(/[^a-zA-Z0-9 _-]/g, ''), { create: true }
-        );
+        const subDir = await baseDirHandle.getDirectoryHandle(folderName, { create: true });
         const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-        const fileName = `${folderName.replace(/[^a-zA-Z0-9 _-]/g, '')}_${timestamp}.png`;
+        const fileName = `${folderName}_${timestamp}.png`;
         const fileHandle = await subDir.getFileHandle(fileName, { create: true });
         const writable = await fileHandle.createWritable();
 
@@ -501,11 +519,7 @@
         if (err.name !== 'AbortError') toast('Save failed: ' + err.message);
       }
     } else {
-      const link = document.createElement('a');
-      link.download = `${folderName.replace(/[^a-zA-Z0-9 _-]/g, '')}.png`;
-      link.href = job.result.toDataURL('image/png');
-      link.click();
-      toast('Downloaded (folder save not supported in this browser, use Chrome on desktop)');
+      toast('Folder save requires Chrome on desktop. Use Download instead.');
     }
   });
 })();
