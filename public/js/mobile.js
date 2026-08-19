@@ -93,7 +93,8 @@
         socket.emit('colors-update', { roomId, colors: scannedColors });
       }
 
-      toast(`Color ${scannedColors.length} picked`);
+      const labels = ['Primary', 'Secondary', 'Accent'];
+      toast(`${labels[scannedColors.length - 1]} color picked`);
     });
   }
 
@@ -143,6 +144,12 @@
       preview.classList.add('visible');
       updateSubmitBtn();
       toast('Image loaded');
+
+      if (socket && roomId) {
+        const name = $('#mobilePieceName').value.trim() || '';
+        socket.emit('image-update', { roomId, image: imageDataUrl, name });
+        toast('Image sent to laptop');
+      }
     };
     reader.readAsDataURL(e.target.files[0]);
   });

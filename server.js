@@ -54,6 +54,10 @@ io.on('connection', (socket) => {
     socket.to(roomId).emit('colors-update', colors);
   });
 
+  socket.on('image-update', ({ roomId, image, name }) => {
+    socket.to(roomId).emit('image-update', { image, name });
+  });
+
   socket.on('submit-job', ({ roomId, job }) => {
     socket.to(roomId).emit('new-job', job);
   });

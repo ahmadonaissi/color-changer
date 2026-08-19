@@ -68,6 +68,16 @@
       $('#receivedColorsSection').style.display = scannedColors.length > 0 ? '' : 'none';
     });
 
+    socket.on('image-update', ({ image, name }) => {
+      loadImageFromDataUrl(image, (img) => {
+        currentImage = img;
+        showPreview(image);
+        if (name) $('#pieceName').value = name;
+        updateProcessBtn();
+        toast('Image received from phone');
+      });
+    });
+
     socket.on('new-job', (job) => {
       loadImageFromDataUrl(job.image, (img) => {
         scannedColors = job.colors;
@@ -180,19 +190,24 @@
   });
 
   // ---- COLOR SLOTS ----
+  const colorLabels = ['Primary', 'Secondary', 'Accent'];
+
   function renderColorSlots() {
     const slots = $$('#pickedColors .color-slot, #pairedColors .color-slot, #mobileColors .color-slot');
     slots.forEach((slot) => {
       const idx = parseInt(slot.dataset.index);
+      const label = slot.querySelector('.label');
       if (idx < scannedColors.length) {
         const c = scannedColors[idx];
         slot.style.background = `rgb(${c.join(',')})`;
         slot.classList.add('filled');
         slot.querySelector('span').textContent = '';
+        if (label) label.textContent = colorLabels[idx];
       } else {
         slot.style.background = '';
         slot.classList.remove('filled');
         slot.querySelector('span').textContent = idx + 1;
+        if (label) label.textContent = colorLabels[idx];
       }
     });
   }
