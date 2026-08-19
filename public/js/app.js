@@ -65,6 +65,7 @@
       scannedColors = colors;
       renderColorSlots();
       updateProcessBtn();
+      $('#receivedColorsSection').style.display = scannedColors.length > 0 ? '' : 'none';
     });
 
     socket.on('new-job', (job) => {
@@ -180,7 +181,7 @@
 
   // ---- COLOR SLOTS ----
   function renderColorSlots() {
-    const slots = $$('#pickedColors .color-slot, #mobileColors .color-slot');
+    const slots = $$('#pickedColors .color-slot, #pairedColors .color-slot, #mobileColors .color-slot');
     slots.forEach((slot) => {
       const idx = parseInt(slot.dataset.index);
       if (idx < scannedColors.length) {
