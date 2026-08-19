@@ -1,0 +1,495 @@
+(function () {
+  const engine = new ColorEngine();
+  let socket = null;
+  let roomId = null;
+  let mode = 'solo';
+  let cameraStream = null;
+  let scannedColors = [];
+  let currentImage = null;
+  let queue = [];
+  let processing = false;
+  let baseDirHandle = null;
+  let activeJobId = null;
+
+  // DOM
+  const $ = (s) => document.querySelector(s);
+  const $$ = (s) => document.querySelectorAll(s);
+
+  // Toast
+  function toast(msg, ms = 3000) {
+    const t = $('#toast');
+    t.textContent = msg;
+    t.classList.add('visible');
+    setTimeout(() => t.classList.remove('visible'), ms);
+  }
+
+  // ---- MODE SWITCHING ----
+  $$('.mode-tabs button').forEach(btn => {
+    btn.addEventListener('click', () => {
+      $$('.mode-tabs button').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      mode = btn.dataset.mode;
+      if (mode === 'paired') {
+        $('#pairSection').style.display = '';
+        $('#scanSection').style.display = 'none';
+        initPairing();
+      } else {
+        $('#pairSection').style.display = 'none';
+        $('#scanSection').style.display = '';
+      }
+    });
+  });
+
+  // ---- PAIRING ----
+  function initPairing() {
+    if (socket) socket.disconnect();
+    socket = io();
+    fetch('/api/create-room').then(r => r.json()).then(data => {
+      roomId = data.roomId;
+      $('#qrCode').src = data.qr;
+      socket.emit('join-room', roomId);
+    });
+
+    socket.on('device-joined', () => {
+      $('#connDot').classList.add('connected');
+      $('#connLabel').textContent = 'Phone connected';
+      toast('Phone connected!');
+    });
+
+    socket.on('device-left', () => {
+      $('#connDot').classList.remove('connected');
+      $('#connLabel').textContent = 'Phone disconnected';
+    });
+
+    socket.on('colors-update', (colors) => {
+      scannedColors = colors;
+      renderColorSlots();
+      updateProcessBtn();
+    });
+
+    socket.on('new-job', (job) => {
+      loadImageFromDataUrl(job.image, (img) => {
+        scannedColors = job.colors;
+        renderColorSlots();
+        currentImage = img;
+        showPreview(job.image);
+        $('#pieceName').value = job.name || '';
+        addToQueue(job.name, job.image, job.colors);
+      });
+    });
+  }
+
+  // ---- CAMERA ----
+  let cameraActive = false;
+
+  $('#toggleCameraBtn').addEventListener('click', async () => {
+    if (cameraActive) {
+      stopCamera();
+    } else {
+      await startCamera();
+    }
+  });
+
+  async function startCamera() {
+    try {
+      cameraStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 480 } }
+      });
+      const video = $('#cameraVideo');
+      video.srcObject = cameraStream;
+      await video.play();
+      const canvas = $('#cameraCanvas');
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      cameraActive = true;
+      $('#toggleCameraBtn').textContent = 'Stop Camera';
+      setupColorPicking(video, canvas, $('#crosshair'), $('#cameraBox'));
+    } catch (err) {
+      toast('Camera not available. Use the manual color picker.');
+    }
+  }
+
+  function stopCamera() {
+    if (cameraStream) {
+      cameraStream.getTracks().forEach(t => t.stop());
+      cameraStream = null;
+    }
+    cameraActive = false;
+    $('#toggleCameraBtn').textContent = 'Start Camera';
+  }
+
+  function setupColorPicking(video, canvas, crosshair, container) {
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+    function drawFrame() {
+      if (!cameraActive) return;
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      requestAnimationFrame(drawFrame);
+    }
+    drawFrame();
+
+    canvas.addEventListener('click', (e) => {
+      if (scannedColors.length >= 3) {
+        toast('Max 3 colors. Remove one first.');
+        return;
+      }
+      const rect = canvas.getBoundingClientRect();
+      const scaleX = canvas.width / rect.width;
+      const scaleY = canvas.height / rect.height;
+      const x = Math.round((e.clientX - rect.left) * scaleX);
+      const y = Math.round((e.clientY - rect.top) * scaleY);
+
+      const size = 5;
+      const pixel = ctx.getImageData(
+        Math.max(0, x - size), Math.max(0, y - size),
+        size * 2, size * 2
+      );
+      let rr = 0, gg = 0, bb = 0, count = 0;
+      for (let i = 0; i < pixel.data.length; i += 4) {
+        rr += pixel.data[i]; gg += pixel.data[i + 1]; bb += pixel.data[i + 2];
+        count++;
+      }
+      const color = [Math.round(rr / count), Math.round(gg / count), Math.round(bb / count)];
+      scannedColors.push(color);
+      renderColorSlots();
+      updateProcessBtn();
+
+      crosshair.style.left = e.clientX - container.getBoundingClientRect().left + 'px';
+      crosshair.style.top = e.clientY - container.getBoundingClientRect().top + 'px';
+      crosshair.style.borderColor = `rgb(${color.join(',')})`;
+      crosshair.classList.add('active');
+      setTimeout(() => crosshair.classList.remove('active'), 800);
+
+      if (socket && mode === 'paired') {
+        socket.emit('colors-update', { roomId, colors: scannedColors });
+      }
+    });
+  }
+
+  // ---- MANUAL COLOR ----
+  $('#addManualColor').addEventListener('click', () => {
+    if (scannedColors.length >= 3) { toast('Max 3 colors. Remove one first.'); return; }
+    const hex = $('#manualColorPicker').value;
+    const r = parseInt(hex.slice(1, 3), 16);
+    const g = parseInt(hex.slice(3, 5), 16);
+    const b = parseInt(hex.slice(5, 7), 16);
+    scannedColors.push([r, g, b]);
+    renderColorSlots();
+    updateProcessBtn();
+  });
+
+  // ---- COLOR SLOTS ----
+  function renderColorSlots() {
+    const slots = $$('#pickedColors .color-slot, #mobileColors .color-slot');
+    slots.forEach((slot) => {
+      const idx = parseInt(slot.dataset.index);
+      if (idx < scannedColors.length) {
+        const c = scannedColors[idx];
+        slot.style.background = `rgb(${c.join(',')})`;
+        slot.classList.add('filled');
+        slot.querySelector('span').textContent = '';
+      } else {
+        slot.style.background = '';
+        slot.classList.remove('filled');
+        slot.querySelector('span').textContent = idx + 1;
+      }
+    });
+  }
+
+  document.addEventListener('click', (e) => {
+    if (e.target.classList.contains('remove')) {
+      const slot = e.target.closest('.color-slot');
+      const idx = parseInt(slot.dataset.index);
+      if (idx < scannedColors.length) {
+        scannedColors.splice(idx, 1);
+        renderColorSlots();
+        updateProcessBtn();
+      }
+    }
+  });
+
+  // ---- IMAGE UPLOAD ----
+  const uploadArea = $('#uploadArea');
+  const imageInput = $('#imageInput');
+
+  uploadArea.addEventListener('click', () => imageInput.click());
+  uploadArea.addEventListener('dragover', (e) => { e.preventDefault(); uploadArea.style.borderColor = 'var(--accent)'; });
+  uploadArea.addEventListener('dragleave', () => { uploadArea.style.borderColor = ''; });
+  uploadArea.addEventListener('drop', (e) => {
+    e.preventDefault();
+    uploadArea.style.borderColor = '';
+    if (e.dataTransfer.files.length) handleImageFile(e.dataTransfer.files[0]);
+  });
+
+  imageInput.addEventListener('change', (e) => {
+    if (e.target.files.length) handleImageFile(e.target.files[0]);
+  });
+
+  function handleImageFile(file) {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      showPreview(e.target.result);
+      loadImageFromDataUrl(e.target.result, (img) => {
+        currentImage = img;
+        updateProcessBtn();
+      });
+    };
+    reader.readAsDataURL(file);
+  }
+
+  function showPreview(dataUrl) {
+    const img = $('#previewImage');
+    img.src = dataUrl;
+    img.style.display = '';
+    uploadArea.classList.add('has-image');
+    uploadArea.querySelector('.upload-icon').style.display = 'none';
+    uploadArea.querySelector('p').style.display = 'none';
+  }
+
+  function loadImageFromDataUrl(dataUrl, cb) {
+    const img = new Image();
+    img.onload = () => cb(img);
+    img.src = dataUrl;
+  }
+
+  function updateProcessBtn() {
+    $('#processBtn').disabled = !(scannedColors.length > 0 && currentImage);
+  }
+
+  // ---- PROCESSING ----
+  $('#processBtn').addEventListener('click', () => {
+    if (!currentImage || scannedColors.length === 0) return;
+    const name = $('#pieceName').value.trim() || `Piece ${queue.length + 1}`;
+    addToQueue(name, currentImage.src, [...scannedColors]);
+  });
+
+  function addToQueue(name, imageSrc, colors) {
+    const job = {
+      id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+      name,
+      imageSrc,
+      colors: colors || [...scannedColors],
+      status: 'pending',
+      result: null,
+      enhanced: false
+    };
+    queue.push(job);
+    renderQueue();
+    processNext();
+  }
+
+  async function processNext() {
+    if (processing) return;
+    const job = queue.find(j => j.status === 'pending');
+    if (!job) return;
+
+    processing = true;
+    job.status = 'processing';
+    activeJobId = job.id;
+    renderQueue();
+    showProgress(true);
+
+    try {
+      const img = await loadImage(job.imageSrc);
+      const canvas = imageToCanvas(img, 1500);
+
+      const result = await engine.recolor(canvas, job.colors, (p) => {
+        setProgress(p);
+      });
+
+      job.result = result.canvas;
+      job.regions = result.regions;
+      job.status = 'complete';
+
+      displayResult(job);
+      renderQueue();
+      toast(`"${job.name}" is ready!`);
+
+      if (socket && mode === 'paired') {
+        socket.emit('job-complete', { roomId, jobId: job.id, result: result.canvas.toDataURL('image/png') });
+      }
+    } catch (err) {
+      job.status = 'error';
+      toast('Error processing image: ' + err.message);
+      renderQueue();
+    }
+
+    processing = false;
+    showProgress(false);
+    processNext();
+  }
+
+  function loadImage(src) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = reject;
+      img.src = src;
+    });
+  }
+
+  function imageToCanvas(img, maxDim) {
+    let w = img.naturalWidth, h = img.naturalHeight;
+    if (Math.max(w, h) > maxDim) {
+      const scale = maxDim / Math.max(w, h);
+      w = Math.round(w * scale);
+      h = Math.round(h * scale);
+    }
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    c.getContext('2d').drawImage(img, 0, 0, w, h);
+    return c;
+  }
+
+  // ---- PROGRESS ----
+  function showProgress(on) {
+    $('#progressBar').classList.toggle('active', on);
+    if (!on) setProgress(0);
+  }
+  function setProgress(p) {
+    $('#progressFill').style.width = Math.round(p * 100) + '%';
+  }
+
+  // ---- DISPLAY RESULT ----
+  function displayResult(job) {
+    const container = $('#resultContainer');
+    container.classList.add('visible');
+
+    const rc = $('#resultCanvas');
+    rc.width = job.result.width;
+    rc.height = job.result.height;
+    rc.getContext('2d').drawImage(job.result, 0, 0);
+
+    const info = $('#regionInfo');
+    info.innerHTML = '';
+    if (job.regions) {
+      job.regions.forEach((r, i) => {
+        if (!r.targetColor) return;
+        const chip = document.createElement('div');
+        chip.className = 'region-chip';
+        chip.innerHTML = `
+          <span class="swatch" style="background:rgb(${r.originalColor.join(',')})"></span>
+          <span>&#8594;</span>
+          <span class="swatch" style="background:rgb(${r.targetColor.join(',')})"></span>
+          <span>${r.percentage}%</span>
+        `;
+        info.appendChild(chip);
+      });
+    }
+
+    activeJobId = job.id;
+    renderQueue();
+  }
+
+  // ---- QUEUE RENDERING ----
+  function renderQueue() {
+    const list = $('#queueList');
+    if (queue.length === 0) {
+      list.innerHTML = '<div class="queue-empty">No items yet. Scan colors and submit an image to start.</div>';
+      return;
+    }
+    list.innerHTML = queue.map(job => `
+      <div class="queue-item ${job.id === activeJobId ? 'active' : ''}" data-id="${job.id}">
+        <div class="queue-thumb">
+          <img src="${job.imageSrc}" alt="">
+        </div>
+        <div class="queue-info">
+          <span class="name">${job.name}</span>
+          <span class="status ${job.status}">
+            ${job.status === 'processing' ? '<span class="spinner"></span>' : ''}
+            ${job.status === 'pending' ? 'Waiting...' : ''}
+            ${job.status === 'processing' ? 'Processing...' : ''}
+            ${job.status === 'complete' ? 'Done' : ''}
+            ${job.status === 'error' ? 'Error' : ''}
+          </span>
+          <div class="queue-colors">
+            ${job.colors.map(c => `<span class="dot" style="background:rgb(${c.join(',')})"></span>`).join('')}
+          </div>
+        </div>
+      </div>
+    `).join('');
+
+    list.querySelectorAll('.queue-item').forEach(el => {
+      el.addEventListener('click', () => {
+        const job = queue.find(j => j.id === el.dataset.id);
+        if (job && job.status === 'complete') {
+          displayResult(job);
+        }
+      });
+    });
+  }
+
+  // ---- ENHANCE ----
+  $('#enhanceBtn').addEventListener('click', () => {
+    const job = queue.find(j => j.id === activeJobId);
+    if (!job || !job.result) return;
+    if (job.enhanced) { toast('Already enhanced'); return; }
+
+    toast('Enhancing...');
+    setTimeout(() => {
+      const enhanced = engine.enhance(job.result);
+      job.result = enhanced;
+      job.enhanced = true;
+      displayResult(job);
+      toast('Quality enhanced (2x upscale + sharpening)');
+    }, 50);
+  });
+
+  // ---- DOWNLOAD ----
+  $('#downloadBtn').addEventListener('click', () => {
+    const job = queue.find(j => j.id === activeJobId);
+    if (!job || !job.result) return;
+    const link = document.createElement('a');
+    link.download = `${job.name.replace(/[^a-zA-Z0-9 _-]/g, '')}.png`;
+    link.href = job.result.toDataURL('image/png');
+    link.click();
+    toast('Downloaded!');
+  });
+
+  // ---- SAVE TO FOLDER ----
+  $('#saveFolderBtn').addEventListener('click', () => {
+    const job = queue.find(j => j.id === activeJobId);
+    if (!job) return;
+    $('#folderNameInput').value = job.name;
+    $('#saveModal').classList.add('visible');
+  });
+
+  $('#cancelSave').addEventListener('click', () => {
+    $('#saveModal').classList.remove('visible');
+  });
+
+  $('#confirmSave').addEventListener('click', async () => {
+    const job = queue.find(j => j.id === activeJobId);
+    if (!job || !job.result) return;
+    const folderName = $('#folderNameInput').value.trim() || job.name;
+    $('#saveModal').classList.remove('visible');
+
+    if ('showDirectoryPicker' in window) {
+      try {
+        if (!baseDirHandle) {
+          baseDirHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
+        }
+        const subDir = await baseDirHandle.getDirectoryHandle(
+          folderName.replace(/[^a-zA-Z0-9 _-]/g, ''), { create: true }
+        );
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        const fileName = `${folderName.replace(/[^a-zA-Z0-9 _-]/g, '')}_${timestamp}.png`;
+        const fileHandle = await subDir.getFileHandle(fileName, { create: true });
+        const writable = await fileHandle.createWritable();
+
+        const blob = await new Promise(r => job.result.toBlob(r, 'image/png'));
+        await writable.write(blob);
+        await writable.close();
+        toast(`Saved to ${folderName}/${fileName}`);
+      } catch (err) {
+        if (err.name !== 'AbortError') toast('Save failed: ' + err.message);
+      }
+    } else {
+      const link = document.createElement('a');
+      link.download = `${folderName.replace(/[^a-zA-Z0-9 _-]/g, '')}.png`;
+      link.href = job.result.toDataURL('image/png');
+      link.click();
+      toast('Downloaded (folder save not supported in this browser, use Chrome on desktop)');
+    }
+  });
+})();

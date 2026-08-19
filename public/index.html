@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Color Changer</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <div class="header">
+    <h1><span>&#9679;</span> Color Changer</h1>
+    <div class="mode-tabs">
+      <button class="active" data-mode="solo">Same Device</button>
+      <button data-mode="paired">Phone + Laptop</button>
+    </div>
+  </div>
+
+  <div class="app-layout">
+    <!-- LEFT PANEL -->
+    <div class="panel" id="leftPanel">
+      <!-- Pairing section (paired mode) -->
+      <div id="pairSection" style="display:none">
+        <h2>Pair Phone</h2>
+        <div class="pair-section">
+          <p style="font-size:0.82rem;color:var(--text2);margin-bottom:12px">
+            Scan this QR code with your phone to connect
+          </p>
+          <img id="qrCode" alt="QR Code" width="220">
+          <div class="pair-status">
+            <div class="dot" id="connDot"></div>
+            <span id="connLabel">Waiting for phone...</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Scanner section (solo mode) -->
+      <div id="scanSection">
+        <h2>Scan Colors</h2>
+        <div class="scanner-section">
+          <div class="camera-box" id="cameraBox">
+            <video id="cameraVideo" autoplay playsinline muted></video>
+            <canvas id="cameraCanvas"></canvas>
+            <div class="camera-crosshair" id="crosshair"></div>
+            <div class="tap-hint">Tap to pick a color</div>
+          </div>
+          <button class="btn-secondary" id="toggleCameraBtn" style="width:100%">Start Camera</button>
+
+          <div class="picked-colors" id="pickedColors">
+            <div class="color-slot" data-index="0">
+              <span>1</span>
+              <span class="label">Primary</span>
+              <button class="remove">&times;</button>
+            </div>
+            <div class="color-slot" data-index="1">
+              <span>2</span>
+              <span class="label">Secondary</span>
+              <button class="remove">&times;</button>
+            </div>
+            <div class="color-slot" data-index="2">
+              <span>3</span>
+              <span class="label">Accent</span>
+              <button class="remove">&times;</button>
+            </div>
+          </div>
+
+          <div class="color-fallback">
+            <input type="color" id="manualColorPicker" value="#6c63ff">
+            <button class="btn-secondary" id="addManualColor">Add Color Manually</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- CENTER WORKSPACE -->
+    <div class="workspace" id="workspace">
+      <div class="upload-area" id="uploadArea">
+        <div class="upload-icon">&#128247;</div>
+        <p>Drop a clothing image here or tap to upload</p>
+        <input type="file" id="imageInput" accept="image/*">
+        <img id="previewImage" style="display:none">
+      </div>
+
+      <div class="submit-bar">
+        <input type="text" id="pieceName" placeholder="Piece name (e.g. T-Shirt Summer)">
+        <button class="btn-primary" id="processBtn" disabled>Recolor</button>
+      </div>
+
+      <div class="progress-bar" id="progressBar">
+        <div class="fill" id="progressFill"></div>
+      </div>
+
+      <div class="result-container" id="resultContainer">
+        <div class="result-header">
+          <h3>Result</h3>
+        </div>
+        <div class="result-image">
+          <canvas id="resultCanvas"></canvas>
+        </div>
+        <div class="region-info" id="regionInfo"></div>
+        <div class="result-actions">
+          <button class="btn-secondary" id="enhanceBtn">Enhance Quality</button>
+          <button class="btn-primary" id="downloadBtn">Download</button>
+          <button class="btn-success" id="saveFolderBtn">Save to Folder</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- RIGHT PANEL (QUEUE) -->
+    <div class="panel">
+      <h2>Queue</h2>
+      <div id="queueList">
+        <div class="queue-empty">No items yet. Scan colors and submit an image to start.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Save Modal -->
+  <div class="modal-overlay" id="saveModal">
+    <div class="modal">
+      <h3>Save to Folder</h3>
+      <p style="font-size:0.82rem;color:var(--text2);margin-bottom:12px">
+        Choose a folder name. Images with the same name go in the same folder.
+      </p>
+      <input type="text" id="folderNameInput" placeholder="Folder name (e.g. Summer Collection)">
+      <div class="modal-actions">
+        <button class="btn-secondary" id="cancelSave">Cancel</button>
+        <button class="btn-primary" id="confirmSave">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="/js/colorEngine.js"></script>
+  <script src="/js/app.js"></script>
+</body>
+</html>
