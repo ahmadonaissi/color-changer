@@ -36,6 +36,11 @@
     socket.on('job-complete', ({ jobId, result }) => {
       toast('Image recolored! Check laptop.');
     });
+    socket.on('colors-update', (colors) => {
+      scannedColors = colors;
+      renderSlots();
+      updateSubmitBtn();
+    });
   }
 
   // ---- CAMERA ----

@@ -113,14 +113,14 @@ class ColorEngine {
     return bg;
   }
 
-  async recolor(sourceCanvas, targetColors, onProgress) {
+  async recolor(sourceCanvas, targetColors, markerPoints, onProgress) {
     const ctx = sourceCanvas.getContext('2d');
     const w = sourceCanvas.width, h = sourceCanvas.height;
     const imageData = ctx.getImageData(0, 0, w, h);
     const data = imageData.data;
     const totalPixels = w * h;
 
-    const sampleSize = Math.min(8000, totalPixels);
+    const sampleSize = Math.min(10000, totalPixels);
     const step = Math.max(1, Math.floor(totalPixels / sampleSize));
     const sampled = [];
     for (let i = 0; i < totalPixels; i += step) {
@@ -128,7 +128,7 @@ class ColorEngine {
       sampled.push([data[idx], data[idx + 1], data[idx + 2]]);
     }
 
-    const k = targetColors.length + 1;
+    const k = Math.max(targetColors.length + 2, 5);
     const { centroids } = this.kMeans(sampled, k);
 
     if (onProgress) onProgress(0.2);
@@ -148,22 +148,19 @@ class ColorEngine {
 
     if (onProgress) onProgress(0.5);
 
-    const bgCluster = this.detectBackground(w, h, centroids, pixelClusters, k);
-
-    const sizes = new Int32Array(k);
-    for (let i = 0; i < totalPixels; i++) sizes[pixelClusters[i]]++;
-
-    const sorted = centroids
-      .map((c, i) => ({ color: c.map(Math.round), index: i, size: sizes[i] }))
-      .filter(c => c.index !== bgCluster)
-      .sort((a, b) => b.size - a.size);
-
     const colorMap = new Map();
     const centroidHsl = new Map();
-    for (let i = 0; i < Math.min(targetColors.length, sorted.length); i++) {
-      const ci = sorted[i].index;
-      colorMap.set(ci, targetColors[i]);
-      centroidHsl.set(ci, this.rgbToHsl(...sorted[i].color));
+    const usedClusters = new Set();
+
+    for (let i = 0; i < markerPoints.length && i < targetColors.length; i++) {
+      const mx = Math.min(Math.max(0, Math.round(markerPoints[i].x)), w - 1);
+      const my = Math.min(Math.max(0, Math.round(markerPoints[i].y)), h - 1);
+      const cluster = pixelClusters[my * w + mx];
+      if (!usedClusters.has(cluster)) {
+        usedClusters.add(cluster);
+        colorMap.set(cluster, targetColors[i]);
+        centroidHsl.set(cluster, this.rgbToHsl(...centroids[cluster].map(Math.round)));
+      }
     }
 
     const targetHsls = new Map();
@@ -172,6 +169,9 @@ class ColorEngine {
     }
 
     if (onProgress) onProgress(0.6);
+
+    const sizes = new Int32Array(k);
+    for (let i = 0; i < totalPixels; i++) sizes[pixelClusters[i]]++;
 
     const resultCanvas = document.createElement('canvas');
     resultCanvas.width = w;
@@ -219,12 +219,17 @@ class ColorEngine {
 
     resultCtx.putImageData(resultData, 0, 0);
     if (onProgress) onProgress(1);
-    return { canvas: resultCanvas, regions: sorted.map((s, i) => ({
-      originalColor: s.color,
-      targetColor: targetColors[i] || null,
-      size: s.size,
-      percentage: Math.round(s.size / totalPixels * 100)
-    }))};
+
+    const regions = [];
+    for (const [ci, tc] of colorMap) {
+      regions.push({
+        originalColor: centroids[ci].map(Math.round),
+        targetColor: tc,
+        size: sizes[ci],
+        percentage: Math.round(sizes[ci] / totalPixels * 100)
+      });
+    }
+    return { canvas: resultCanvas, regions };
   }
 
   sharpen(canvas, amount = 1.5) {
