@@ -524,6 +524,13 @@
     });
   }
 
+  // ---- NEW PIECE ----
+  $('#newPieceBtn').addEventListener('click', () => {
+    $('#resultContainer').classList.remove('visible');
+    uploadArea.scrollIntoView({ behavior: 'smooth' });
+    imageInput.click();
+  });
+
   // ---- ENHANCE ----
   $('#enhanceBtn').addEventListener('click', () => {
     const job = queue.find(j => j.id === activeJobId);
