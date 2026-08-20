@@ -85,6 +85,36 @@ setInterval(() => {
   }
 }, 600000);
 
+app.get('/api/ai-status', (req, res) => {
+  res.json({ available: !!process.env.REPLICATE_API_TOKEN });
+});
+
+app.post('/api/segment', async (req, res) => {
+  const token = process.env.REPLICATE_API_TOKEN;
+  if (!token) return res.status(400).json({ error: 'AI not configured' });
+
+  try {
+    const Replicate = require('replicate');
+    const replicate = new Replicate({ auth: token });
+    const { image } = req.body;
+
+    const output = await replicate.run(
+      'cjwbw/rembg:fb8af171cfa1616ddcf1242c093f9c46bcada5ad4cf6f2fbe8b81b330ec5c003',
+      { input: { image } }
+    );
+
+    const maskUrl = typeof output === 'string' ? output : output?.url || output;
+    const maskResp = await fetch(maskUrl);
+    const maskBuffer = Buffer.from(await maskResp.arrayBuffer());
+    const maskBase64 = 'data:image/png;base64,' + maskBuffer.toString('base64');
+
+    res.json({ mask: maskBase64 });
+  } catch (err) {
+    console.error('Segmentation error:', err);
+    res.status(500).json({ error: 'Segmentation failed: ' + err.message });
+  }
+});
+
 app.get('/health', (req, res) => res.send('ok'));
 
 const PORT = process.env.PORT || 3000;

@@ -10,12 +10,14 @@
   let markerPoints = [];
   let queue = [];
   let processing = false;
-  let baseDirHandle = null;
   let activeJobId = null;
   let imageReady = false;
+  let aiAvailable = false;
+  let saveDirHandle = null;
 
   const $ = (s) => document.querySelector(s);
   const $$ = (s) => document.querySelectorAll(s);
+  const colorLabels = ['Primary', 'Secondary', 'Accent'];
 
   function toast(msg, ms = 3000) {
     const t = $('#toast');
@@ -24,7 +26,13 @@
     setTimeout(() => t.classList.remove('visible'), ms);
   }
 
-  const colorLabels = ['Primary', 'Secondary', 'Accent'];
+  // ---- CHECK AI ----
+  fetch('/api/ai-status').then(r => r.json()).then(data => {
+    aiAvailable = data.available;
+    if (aiAvailable) {
+      toast('AI garment detection enabled', 2000);
+    }
+  }).catch(() => {});
 
   // ---- MODE SWITCHING ----
   $$('.mode-tabs button').forEach(btn => {
@@ -52,38 +60,33 @@
       $('#qrCode').src = data.qr;
       socket.emit('join-room', roomId);
     });
-
     socket.on('device-joined', () => {
       $('#connDot').classList.add('connected');
       $('#connLabel').textContent = 'Phone connected';
       toast('Phone connected!');
     });
-
     socket.on('device-left', () => {
       $('#connDot').classList.remove('connected');
       $('#connLabel').textContent = 'Phone disconnected';
     });
-
     socket.on('colors-update', (colors) => {
       scannedColors = colors;
       renderColorSlots();
-      updateMarkerHint();
+      updateHint();
       updateProcessBtn();
       $('#receivedColorsSection').style.display = scannedColors.length > 0 ? '' : 'none';
     });
-
     socket.on('image-update', ({ image, name }) => {
       loadImageFromDataUrl(image, (img) => {
         currentImage = img;
         currentImageSrc = image;
         showPreview(image);
         if (name) $('#pieceName').value = name;
-        updateMarkerHint();
+        updateHint();
         updateProcessBtn();
         toast('Image received from phone');
       });
     });
-
     socket.on('new-job', (job) => {
       loadImageFromDataUrl(job.image, (img) => {
         scannedColors = job.colors;
@@ -92,17 +95,15 @@
         currentImageSrc = job.image;
         showPreview(job.image);
         $('#pieceName').value = job.name || '';
-        addToQueue(job.name, job.image, job.colors, job.markers || []);
+        enqueueJob(job.name, job.image, job.colors, []);
       });
     });
   }
 
   // ---- CAMERA ----
   let cameraActive = false;
-
   $('#toggleCameraBtn').addEventListener('click', async () => {
-    if (cameraActive) stopCamera();
-    else await startCamera();
+    if (cameraActive) stopCamera(); else await startCamera();
   });
 
   async function startCamera() {
@@ -125,10 +126,7 @@
   }
 
   function stopCamera() {
-    if (cameraStream) {
-      cameraStream.getTracks().forEach(t => t.stop());
-      cameraStream = null;
-    }
+    if (cameraStream) { cameraStream.getTracks().forEach(t => t.stop()); cameraStream = null; }
     cameraActive = false;
     $('#toggleCameraBtn').textContent = 'Start Camera';
   }
@@ -141,7 +139,6 @@
       requestAnimationFrame(drawFrame);
     }
     drawFrame();
-
     canvas.addEventListener('click', (e) => {
       if (scannedColors.length >= 3) { toast('Max 3 colors. Remove one first.'); return; }
       const rect = canvas.getBoundingClientRect();
@@ -156,16 +153,14 @@
       const color = [Math.round(rr / count), Math.round(gg / count), Math.round(bb / count)];
       scannedColors.push(color);
       renderColorSlots();
-      updateMarkerHint();
+      updateHint();
       updateProcessBtn();
       crosshair.style.left = e.clientX - container.getBoundingClientRect().left + 'px';
       crosshair.style.top = e.clientY - container.getBoundingClientRect().top + 'px';
       crosshair.style.borderColor = `rgb(${color.join(',')})`;
       crosshair.classList.add('active');
       setTimeout(() => crosshair.classList.remove('active'), 800);
-      if (socket && mode === 'paired') {
-        socket.emit('colors-update', { roomId, colors: scannedColors });
-      }
+      if (socket && mode === 'paired') socket.emit('colors-update', { roomId, colors: scannedColors });
     });
   }
 
@@ -173,19 +168,15 @@
   $('#addManualColor').addEventListener('click', () => {
     if (scannedColors.length >= 3) { toast('Max 3 colors. Remove one first.'); return; }
     const hex = $('#manualColorPicker').value;
-    const r = parseInt(hex.slice(1, 3), 16);
-    const g = parseInt(hex.slice(3, 5), 16);
-    const b = parseInt(hex.slice(5, 7), 16);
-    scannedColors.push([r, g, b]);
+    scannedColors.push([parseInt(hex.slice(1, 3), 16), parseInt(hex.slice(3, 5), 16), parseInt(hex.slice(5, 7), 16)]);
     renderColorSlots();
-    updateMarkerHint();
+    updateHint();
     updateProcessBtn();
   });
 
   // ---- COLOR SLOTS ----
   function renderColorSlots() {
-    const slots = $$('#pickedColors .color-slot, #pairedColors .color-slot, #mobileColors .color-slot');
-    slots.forEach((slot) => {
+    $$('#pickedColors .color-slot, #pairedColors .color-slot').forEach((slot) => {
       const idx = parseInt(slot.dataset.index);
       const label = slot.querySelector('.label');
       if (idx < scannedColors.length) {
@@ -193,13 +184,12 @@
         slot.style.background = `rgb(${c.join(',')})`;
         slot.classList.add('filled');
         slot.querySelector('span').textContent = '';
-        if (label) label.textContent = colorLabels[idx];
       } else {
         slot.style.background = '';
         slot.classList.remove('filled');
         slot.querySelector('span').textContent = idx + 1;
-        if (label) label.textContent = colorLabels[idx];
       }
+      if (label) label.textContent = colorLabels[idx];
     });
   }
 
@@ -210,7 +200,7 @@
       if (idx < scannedColors.length) {
         scannedColors.splice(idx, 1);
         renderColorSlots();
-        updateMarkerHint();
+        updateHint();
         updateProcessBtn();
         clearMarkers();
       }
@@ -229,14 +219,10 @@
   uploadArea.addEventListener('dragover', (e) => { e.preventDefault(); uploadArea.style.borderColor = 'var(--accent)'; });
   uploadArea.addEventListener('dragleave', () => { uploadArea.style.borderColor = ''; });
   uploadArea.addEventListener('drop', (e) => {
-    e.preventDefault();
-    uploadArea.style.borderColor = '';
+    e.preventDefault(); uploadArea.style.borderColor = '';
     if (e.dataTransfer.files.length) handleImageFile(e.dataTransfer.files[0]);
   });
-  imageInput.addEventListener('change', (e) => {
-    if (e.target.files.length) handleImageFile(e.target.files[0]);
-  });
-
+  imageInput.addEventListener('change', (e) => { if (e.target.files.length) handleImageFile(e.target.files[0]); });
   $('#changeImageBtn').addEventListener('click', () => imageInput.click());
   $('#clearMarkersBtn').addEventListener('click', clearMarkers);
 
@@ -249,7 +235,7 @@
         currentImage = img;
         imageReady = true;
         clearMarkers();
-        updateMarkerHint();
+        updateHint();
         updateProcessBtn();
         $('#changeImageBar').style.display = '';
       });
@@ -274,59 +260,53 @@
     img.src = dataUrl;
   }
 
-  // ---- MARKER SYSTEM ----
+  // ---- MARKER SYSTEM (fallback when AI not available) ----
   markerOverlay.addEventListener('click', (e) => {
+    if (aiAvailable) return;
     e.stopPropagation();
     if (!imageReady || scannedColors.length === 0) return;
-    if (markerPoints.length >= scannedColors.length) {
-      toast('All colors assigned. Clear markers to redo.');
-      return;
-    }
-
+    if (markerPoints.length >= scannedColors.length) { toast('All colors assigned. Clear markers to redo.'); return; }
     const rect = markerOverlay.getBoundingClientRect();
     const relX = (e.clientX - rect.left) / rect.width;
     const relY = (e.clientY - rect.top) / rect.height;
-    const imgX = relX * currentImage.naturalWidth;
-    const imgY = relY * currentImage.naturalHeight;
-
-    const colorIdx = markerPoints.length;
-    markerPoints.push({ x: imgX, y: imgY });
-
+    markerPoints.push({ x: relX * currentImage.naturalWidth, y: relY * currentImage.naturalHeight });
     const dot = document.createElement('div');
     dot.className = 'marker-dot';
     dot.style.left = (relX * 100) + '%';
     dot.style.top = (relY * 100) + '%';
-    dot.style.background = `rgb(${scannedColors[colorIdx].join(',')})`;
-    dot.textContent = colorIdx + 1;
+    dot.style.background = `rgb(${scannedColors[markerPoints.length - 1].join(',')})`;
+    dot.textContent = markerPoints.length;
     markerOverlay.appendChild(dot);
-
-    toast(`${colorLabels[colorIdx]} color placed on garment`);
-    updateMarkerHint();
+    toast(`${colorLabels[markerPoints.length - 1]} color placed`);
+    updateHint();
     updateProcessBtn();
   });
 
   function clearMarkers() {
     markerPoints = [];
     markerOverlay.querySelectorAll('.marker-dot').forEach(d => d.remove());
-    updateMarkerHint();
+    updateHint();
     updateProcessBtn();
   }
 
-  function updateMarkerHint() {
+  function updateHint() {
     const hint = $('#markerHint');
     const overlay = markerOverlay;
-
     if (!imageReady || scannedColors.length === 0) {
       hint.classList.remove('visible');
       overlay.classList.remove('active');
       return;
     }
-
+    if (aiAvailable) {
+      hint.textContent = 'AI will auto-detect the garment';
+      hint.classList.add('visible');
+      overlay.classList.remove('active');
+      setTimeout(() => hint.classList.remove('visible'), 2500);
+      return;
+    }
     overlay.classList.add('active');
-
     if (markerPoints.length < scannedColors.length) {
-      const next = colorLabels[markerPoints.length];
-      hint.textContent = `Tap on the garment for ${next} color (${markerPoints.length + 1}/${scannedColors.length})`;
+      hint.textContent = `Tap garment for ${colorLabels[markerPoints.length]} (${markerPoints.length + 1}/${scannedColors.length})`;
       hint.classList.add('visible');
     } else {
       hint.textContent = 'All set! Hit Recolor';
@@ -336,16 +316,23 @@
   }
 
   function updateProcessBtn() {
-    const ready = scannedColors.length > 0 && imageReady && markerPoints.length >= scannedColors.length;
-    $('#processBtn').disabled = !ready;
+    if (aiAvailable) {
+      $('#processBtn').disabled = !(scannedColors.length > 0 && imageReady);
+    } else {
+      $('#processBtn').disabled = !(scannedColors.length > 0 && imageReady && markerPoints.length >= scannedColors.length);
+    }
   }
 
   // ---- PROCESSING ----
   $('#processBtn').addEventListener('click', () => {
-    if (!currentImage || scannedColors.length === 0 || markerPoints.length < scannedColors.length) return;
+    if (!currentImage || scannedColors.length === 0) return;
+    if (!aiAvailable && markerPoints.length < scannedColors.length) return;
     const name = $('#pieceName').value.trim() || `Piece ${queue.length + 1}`;
-    addToQueue(name, currentImageSrc, [...scannedColors], [...markerPoints]);
+    enqueueJob(name, currentImageSrc, [...scannedColors], [...markerPoints]);
+    resetWorkspace();
+  });
 
+  function resetWorkspace() {
     scannedColors = [];
     currentImage = null;
     currentImageSrc = null;
@@ -360,23 +347,16 @@
     $('#pieceName').value = '';
     $('#changeImageBar').style.display = 'none';
     $('#receivedColorsSection').style.display = 'none';
+    $('#markerHint').classList.remove('visible');
     imageInput.value = '';
+    if (socket && mode === 'paired') socket.emit('colors-update', { roomId, colors: [] });
+  }
 
-    if (socket && mode === 'paired') {
-      socket.emit('colors-update', { roomId, colors: [] });
-    }
-  });
-
-  function addToQueue(name, imageSrc, colors, markers) {
+  function enqueueJob(name, imageSrc, colors, markers) {
     const job = {
       id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
-      name,
-      imageSrc,
-      colors,
-      markers,
-      status: 'pending',
-      result: null,
-      enhanced: false
+      name, imageSrc, colors, markers,
+      status: 'pending', result: null, enhanced: false
     };
     queue.push(job);
     renderQueue();
@@ -397,32 +377,44 @@
     try {
       const img = await loadImage(job.imageSrc);
       const canvas = imageToCanvas(img, 1500);
+      let result;
 
-      const scaleX = canvas.width / img.naturalWidth;
-      const scaleY = canvas.height / img.naturalHeight;
-      const scaledMarkers = job.markers.map(m => ({
-        x: m.x * scaleX,
-        y: m.y * scaleY
-      }));
-
-      const result = await engine.recolor(canvas, job.colors, scaledMarkers, (p) => {
-        setProgress(p);
-      });
+      if (aiAvailable) {
+        setProgress(0.1);
+        toast('AI is detecting the garment...', 5000);
+        const resp = await fetch('/api/segment', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ image: job.imageSrc })
+        });
+        if (!resp.ok) throw new Error('AI segmentation failed');
+        const { mask } = await resp.json();
+        setProgress(0.4);
+        const maskImg = await loadImage(mask);
+        const maskCanvas = document.createElement('canvas');
+        maskCanvas.width = canvas.width;
+        maskCanvas.height = canvas.height;
+        maskCanvas.getContext('2d').drawImage(maskImg, 0, 0, canvas.width, canvas.height);
+        result = await engine.recolorWithMask(canvas, maskCanvas, job.colors, (p) => setProgress(0.4 + p * 0.6));
+      } else {
+        const scaleX = canvas.width / img.naturalWidth;
+        const scaleY = canvas.height / img.naturalHeight;
+        const scaledMarkers = job.markers.map(m => ({ x: m.x * scaleX, y: m.y * scaleY }));
+        result = await engine.recolor(canvas, job.colors, scaledMarkers, (p) => setProgress(p));
+      }
 
       job.result = result.canvas;
       job.regions = result.regions;
       job.status = 'complete';
-
       displayResult(job);
       renderQueue();
       toast(`"${job.name}" is ready!`);
-
       if (socket && mode === 'paired') {
         socket.emit('job-complete', { roomId, jobId: job.id, result: result.canvas.toDataURL('image/png') });
       }
     } catch (err) {
       job.status = 'error';
-      toast('Error processing image: ' + err.message);
+      toast('Error: ' + err.message);
       renderQueue();
     }
 
@@ -433,44 +425,29 @@
 
   function loadImage(src) {
     return new Promise((resolve, reject) => {
-      const img = new Image();
-      img.onload = () => resolve(img);
-      img.onerror = reject;
-      img.src = src;
+      const img = new Image(); img.onload = () => resolve(img); img.onerror = reject; img.src = src;
     });
   }
 
   function imageToCanvas(img, maxDim) {
     let w = img.naturalWidth, h = img.naturalHeight;
-    if (Math.max(w, h) > maxDim) {
-      const scale = maxDim / Math.max(w, h);
-      w = Math.round(w * scale);
-      h = Math.round(h * scale);
-    }
+    if (Math.max(w, h) > maxDim) { const s = maxDim / Math.max(w, h); w = Math.round(w * s); h = Math.round(h * s); }
     const c = document.createElement('canvas');
     c.width = w; c.height = h;
     c.getContext('2d').drawImage(img, 0, 0, w, h);
     return c;
   }
 
-  // ---- PROGRESS ----
-  function showProgress(on) {
-    $('#progressBar').classList.toggle('active', on);
-    if (!on) setProgress(0);
-  }
-  function setProgress(p) {
-    $('#progressFill').style.width = Math.round(p * 100) + '%';
-  }
+  function showProgress(on) { $('#progressBar').classList.toggle('active', on); if (!on) setProgress(0); }
+  function setProgress(p) { $('#progressFill').style.width = Math.round(p * 100) + '%'; }
 
   // ---- DISPLAY RESULT ----
   function displayResult(job) {
     const container = $('#resultContainer');
     container.classList.add('visible');
     const rc = $('#resultCanvas');
-    rc.width = job.result.width;
-    rc.height = job.result.height;
+    rc.width = job.result.width; rc.height = job.result.height;
     rc.getContext('2d').drawImage(job.result, 0, 0);
-
     const info = $('#regionInfo');
     info.innerHTML = '';
     if (job.regions) {
@@ -478,12 +455,10 @@
         if (!r.targetColor) return;
         const chip = document.createElement('div');
         chip.className = 'region-chip';
-        chip.innerHTML = `
-          <span class="swatch" style="background:rgb(${r.originalColor.join(',')})"></span>
+        chip.innerHTML = `<span class="swatch" style="background:rgb(${r.originalColor.join(',')})"></span>
           <span>&#8594;</span>
           <span class="swatch" style="background:rgb(${r.targetColor.join(',')})"></span>
-          <span>${r.percentage}%</span>
-        `;
+          <span>${r.percentage}%</span>`;
         info.appendChild(chip);
       });
     }
@@ -514,8 +489,7 @@
             ${job.colors.map(c => `<span class="dot" style="background:rgb(${c.join(',')})"></span>`).join('')}
           </div>
         </div>
-      </div>
-    `).join('');
+      </div>`).join('');
     list.querySelectorAll('.queue-item').forEach(el => {
       el.addEventListener('click', () => {
         const job = queue.find(j => j.id === el.dataset.id);
@@ -538,8 +512,7 @@
     if (job.enhanced) { toast('Already enhanced'); return; }
     toast('Enhancing...');
     setTimeout(() => {
-      const enhanced = engine.enhance(job.result);
-      job.result = enhanced;
+      job.result = engine.enhance(job.result);
       job.enhanced = true;
       displayResult(job);
       toast('Quality enhanced (2x upscale + sharpening)');
@@ -558,33 +531,21 @@
           suggestedName: `${safeName}.png`,
           types: [{ description: 'PNG Image', accept: { 'image/png': ['.png'] } }]
         });
-        const writable = await handle.createWritable();
-        await writable.write(blob);
-        await writable.close();
+        const w = await handle.createWritable(); await w.write(blob); await w.close();
         toast('Saved!');
-      } catch (err) {
-        if (err.name !== 'AbortError') toast('Save failed: ' + err.message);
-      }
+      } catch (err) { if (err.name !== 'AbortError') toast('Save failed: ' + err.message); }
     } else {
       const link = document.createElement('a');
-      link.download = `${safeName}.png`;
-      link.href = URL.createObjectURL(blob);
-      link.click();
-      URL.revokeObjectURL(link.href);
-      toast('Downloaded!');
+      link.download = `${safeName}.png`; link.href = URL.createObjectURL(blob);
+      link.click(); URL.revokeObjectURL(link.href); toast('Downloaded!');
     }
   });
 
   // ---- CREATE FOLDER ----
-  let saveDirHandle = null;
-
   $('#saveFolderBtn').addEventListener('click', () => {
     const job = queue.find(j => j.id === activeJobId);
     if (!job) return;
-    if (!('showDirectoryPicker' in window)) {
-      toast('Folder save requires Chrome on desktop. Use Download instead.');
-      return;
-    }
+    if (!('showDirectoryPicker' in window)) { toast('Folder save requires Chrome on desktop.'); return; }
     $('#folderNameInput').value = job.name;
     if (saveDirHandle) {
       $('#locationLabel').textContent = 'Location: ' + saveDirHandle.name;
@@ -596,20 +557,15 @@
     }
     $('#saveModal').classList.add('visible');
   });
-
   $('#pickLocationBtn').addEventListener('click', async () => {
     try {
       saveDirHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
       $('#locationLabel').textContent = 'Location: ' + saveDirHandle.name;
       $('#locationLabel').style.display = '';
       $('#confirmSave').disabled = false;
-    } catch (err) {
-      if (err.name !== 'AbortError') toast('Could not pick location');
-    }
+    } catch (err) { if (err.name !== 'AbortError') toast('Could not pick location'); }
   });
-
   $('#cancelSave').addEventListener('click', () => { $('#saveModal').classList.remove('visible'); });
-
   $('#confirmSave').addEventListener('click', async () => {
     const job = queue.find(j => j.id === activeJobId);
     if (!job || !job.result || !saveDirHandle) return;
@@ -617,16 +573,13 @@
     $('#saveModal').classList.remove('visible');
     try {
       const subDir = await saveDirHandle.getDirectoryHandle(folderName, { create: true });
-      const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-      const fileName = `${folderName}_${timestamp}.png`;
-      const fileHandle = await subDir.getFileHandle(fileName, { create: true });
-      const writable = await fileHandle.createWritable();
-      const blob = await new Promise(r => job.result.toBlob(r, 'image/png'));
-      await writable.write(blob);
-      await writable.close();
+      const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      const fileName = `${folderName}_${ts}.png`;
+      const fh = await subDir.getFileHandle(fileName, { create: true });
+      const w = await fh.createWritable();
+      await w.write(await new Promise(r => job.result.toBlob(r, 'image/png')));
+      await w.close();
       toast(`Saved to ${saveDirHandle.name}/${folderName}/${fileName}`);
-    } catch (err) {
-      if (err.name !== 'AbortError') toast('Save failed: ' + err.message);
-    }
+    } catch (err) { if (err.name !== 'AbortError') toast('Save failed: ' + err.message); }
   });
 })();

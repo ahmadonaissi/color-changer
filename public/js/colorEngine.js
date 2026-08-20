@@ -113,6 +113,123 @@ class ColorEngine {
     return bg;
   }
 
+  isSkin(r, g, b) {
+    const [h, s, l] = this.rgbToHsl(r, g, b);
+    return h >= 0 && h <= 50 && s >= 15 && s <= 75 && l >= 20 && l <= 78;
+  }
+
+  async recolorWithMask(sourceCanvas, maskCanvas, targetColors, onProgress) {
+    const w = sourceCanvas.width, h = sourceCanvas.height;
+    const srcCtx = sourceCanvas.getContext('2d');
+    const srcData = srcCtx.getImageData(0, 0, w, h);
+    const sd = srcData.data;
+
+    const maskScaled = document.createElement('canvas');
+    maskScaled.width = w; maskScaled.height = h;
+    const mCtx = maskScaled.getContext('2d');
+    mCtx.drawImage(maskCanvas, 0, 0, w, h);
+    const maskData = mCtx.getImageData(0, 0, w, h);
+    const md = maskData.data;
+
+    const totalPixels = w * h;
+    const garmentPixels = [];
+    const garmentIndices = [];
+
+    for (let i = 0; i < totalPixels; i++) {
+      const idx = i * 4;
+      if (md[idx + 3] < 128) continue;
+      const r = sd[idx], g = sd[idx + 1], b = sd[idx + 2];
+      if (this.isSkin(r, g, b)) continue;
+      garmentPixels.push([r, g, b]);
+      garmentIndices.push(i);
+    }
+
+    if (onProgress) onProgress(0.3);
+
+    const sampleSize = Math.min(8000, garmentPixels.length);
+    const step = Math.max(1, Math.floor(garmentPixels.length / sampleSize));
+    const sampled = [];
+    for (let i = 0; i < garmentPixels.length; i += step) {
+      sampled.push(garmentPixels[i]);
+    }
+
+    const k = Math.max(targetColors.length, 2);
+    const { centroids } = this.kMeans(sampled, k);
+
+    if (onProgress) onProgress(0.5);
+
+    const clusterAssign = new Int32Array(garmentPixels.length);
+    for (let i = 0; i < garmentPixels.length; i++) {
+      const p = garmentPixels[i];
+      let minD = Infinity, minJ = 0;
+      for (let j = 0; j < k; j++) {
+        const dr = p[0] - centroids[j][0], dg = p[1] - centroids[j][1], db = p[2] - centroids[j][2];
+        if (dr * dr + dg * dg + db * db < minD) { minD = dr * dr + dg * dg + db * db; minJ = j; }
+      }
+      clusterAssign[i] = minJ;
+    }
+
+    const sizes = new Int32Array(k);
+    for (let i = 0; i < garmentPixels.length; i++) sizes[clusterAssign[i]]++;
+
+    const sorted = centroids
+      .map((c, i) => ({ color: c.map(Math.round), index: i, size: sizes[i] }))
+      .sort((a, b) => b.size - a.size);
+
+    const colorMap = new Map();
+    const centroidHsl = new Map();
+    for (let i = 0; i < Math.min(targetColors.length, sorted.length); i++) {
+      const ci = sorted[i].index;
+      colorMap.set(ci, targetColors[i]);
+      centroidHsl.set(ci, this.rgbToHsl(...sorted[i].color));
+    }
+
+    const targetHsls = new Map();
+    for (const [ci, tc] of colorMap) targetHsls.set(ci, this.rgbToHsl(...tc));
+
+    if (onProgress) onProgress(0.6);
+
+    const resultCanvas = document.createElement('canvas');
+    resultCanvas.width = w; resultCanvas.height = h;
+    const rCtx = resultCanvas.getContext('2d');
+    rCtx.drawImage(sourceCanvas, 0, 0);
+    const resultData = rCtx.getImageData(0, 0, w, h);
+    const rd = resultData.data;
+
+    const chunk = 50000;
+    for (let start = 0; start < garmentIndices.length; start += chunk) {
+      const end = Math.min(start + chunk, garmentIndices.length);
+      for (let gi = start; gi < end; gi++) {
+        const i = garmentIndices[gi];
+        const cluster = clusterAssign[gi];
+        if (!colorMap.has(cluster)) continue;
+
+        const idx = i * 4;
+        const r = sd[idx], g = sd[idx + 1], b = sd[idx + 2];
+        const [ph, ps, pl] = this.rgbToHsl(r, g, b);
+        const [th, ts] = targetHsls.get(cluster);
+        const [ch, cs] = centroidHsl.get(cluster);
+
+        let newS = cs > 5 ? Math.min(100, ts * (ps / cs)) : ts * 0.6;
+        const [nr, ng, nb] = this.hslToRgb(th, newS, pl);
+        rd[idx] = nr; rd[idx + 1] = ng; rd[idx + 2] = nb;
+      }
+      if (onProgress) onProgress(0.6 + 0.35 * (end / garmentIndices.length));
+      await new Promise(r => setTimeout(r, 0));
+    }
+
+    rCtx.putImageData(resultData, 0, 0);
+    if (onProgress) onProgress(1);
+
+    const regions = sorted.slice(0, targetColors.length).map((s, i) => ({
+      originalColor: s.color,
+      targetColor: targetColors[i] || null,
+      size: s.size,
+      percentage: Math.round(s.size / totalPixels * 100)
+    }));
+    return { canvas: resultCanvas, regions };
+  }
+
   async recolor(sourceCanvas, targetColors, markerPoints, onProgress) {
     const ctx = sourceCanvas.getContext('2d');
     const w = sourceCanvas.width, h = sourceCanvas.height;
