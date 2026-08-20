@@ -85,7 +85,9 @@ setInterval(() => {
   }
 }, 600000);
 
+app.get('/health', (req, res) => res.send('ok'));
+
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
+server.listen(PORT, '0.0.0.0', () => {
   console.log(`Color Changer running on port ${PORT}`);
 });
