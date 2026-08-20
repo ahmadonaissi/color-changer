@@ -150,12 +150,16 @@
     <div class="modal">
       <h3>Create Folder</h3>
       <p style="font-size:0.82rem;color:var(--text2);margin-bottom:12px">
-        Name the folder. Same name = same folder. First time, you'll pick a base directory.
+        Choose where to save and name the folder.
       </p>
+      <button class="btn-secondary" id="pickLocationBtn" style="width:100%;margin-bottom:12px;text-align:left">
+        Choose Location...
+      </button>
+      <p id="locationLabel" style="font-size:0.75rem;color:var(--success);margin-bottom:12px;display:none"></p>
       <input type="text" id="folderNameInput" placeholder="Folder name (e.g. T-Shirt Summer)">
       <div class="modal-actions">
         <button class="btn-secondary" id="cancelSave">Cancel</button>
-        <button class="btn-primary" id="confirmSave">Save</button>
+        <button class="btn-primary" id="confirmSave" disabled>Save</button>
       </div>
     </div>
   </div>

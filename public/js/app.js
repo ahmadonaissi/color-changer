@@ -576,38 +576,57 @@
   });
 
   // ---- CREATE FOLDER ----
+  let saveDirHandle = null;
+
   $('#saveFolderBtn').addEventListener('click', () => {
     const job = queue.find(j => j.id === activeJobId);
     if (!job) return;
+    if (!('showDirectoryPicker' in window)) {
+      toast('Folder save requires Chrome on desktop. Use Download instead.');
+      return;
+    }
     $('#folderNameInput').value = job.name;
+    if (saveDirHandle) {
+      $('#locationLabel').textContent = 'Location: ' + saveDirHandle.name;
+      $('#locationLabel').style.display = '';
+      $('#confirmSave').disabled = false;
+    } else {
+      $('#locationLabel').style.display = 'none';
+      $('#confirmSave').disabled = true;
+    }
     $('#saveModal').classList.add('visible');
   });
+
+  $('#pickLocationBtn').addEventListener('click', async () => {
+    try {
+      saveDirHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
+      $('#locationLabel').textContent = 'Location: ' + saveDirHandle.name;
+      $('#locationLabel').style.display = '';
+      $('#confirmSave').disabled = false;
+    } catch (err) {
+      if (err.name !== 'AbortError') toast('Could not pick location');
+    }
+  });
+
   $('#cancelSave').addEventListener('click', () => { $('#saveModal').classList.remove('visible'); });
+
   $('#confirmSave').addEventListener('click', async () => {
     const job = queue.find(j => j.id === activeJobId);
-    if (!job || !job.result) return;
+    if (!job || !job.result || !saveDirHandle) return;
     const folderName = ($('#folderNameInput').value.trim() || job.name).replace(/[^a-zA-Z0-9 _-]/g, '');
     $('#saveModal').classList.remove('visible');
-    if ('showDirectoryPicker' in window) {
-      try {
-        if (!baseDirHandle) {
-          baseDirHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
-          toast('Base folder set. Future saves go here automatically.');
-        }
-        const subDir = await baseDirHandle.getDirectoryHandle(folderName, { create: true });
-        const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-        const fileName = `${folderName}_${timestamp}.png`;
-        const fileHandle = await subDir.getFileHandle(fileName, { create: true });
-        const writable = await fileHandle.createWritable();
-        const blob = await new Promise(r => job.result.toBlob(r, 'image/png'));
-        await writable.write(blob);
-        await writable.close();
-        toast(`Saved to ${folderName}/${fileName}`);
-      } catch (err) {
-        if (err.name !== 'AbortError') toast('Save failed: ' + err.message);
-      }
-    } else {
-      toast('Folder save requires Chrome on desktop. Use Download instead.');
+    try {
+      const subDir = await saveDirHandle.getDirectoryHandle(folderName, { create: true });
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      const fileName = `${folderName}_${timestamp}.png`;
+      const fileHandle = await subDir.getFileHandle(fileName, { create: true });
+      const writable = await fileHandle.createWritable();
+      const blob = await new Promise(r => job.result.toBlob(r, 'image/png'));
+      await writable.write(blob);
+      await writable.close();
+      toast(`Saved to ${saveDirHandle.name}/${folderName}/${fileName}`);
+    } catch (err) {
+      if (err.name !== 'AbortError') toast('Save failed: ' + err.message);
     }
   });
 })();
