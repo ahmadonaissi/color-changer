@@ -89,54 +89,119 @@ app.get('/api/ai-status', (req, res) => {
   res.json({ available: !!process.env.REPLICATE_API_TOKEN });
 });
 
-app.post('/api/segment', async (req, res) => {
+function rgbToColorName(r, g, b) {
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const l = (max + min) / (2 * 255);
+  const range = max - min;
+  const s = range === 0 ? 0 : range / (l > 0.5 ? (510 - max - min) : (max + min));
+
+  if (l < 0.1) return 'black';
+  if (l > 0.9 && s < 0.1) return 'white';
+  if (s < 0.08) {
+    if (l < 0.35) return 'dark gray';
+    if (l < 0.65) return 'gray';
+    return 'light gray';
+  }
+
+  let h;
+  if (range === 0) h = 0;
+  else if (max === r) h = ((g - b) / range + (g < b ? 6 : 0)) * 60;
+  else if (max === g) h = ((b - r) / range + 2) * 60;
+  else h = ((r - g) / range + 4) * 60;
+
+  let name;
+  if (h < 15 || h >= 345) name = 'red';
+  else if (h < 45) name = 'orange';
+  else if (h < 70) name = 'yellow';
+  else if (h < 160) name = 'green';
+  else if (h < 200) name = 'teal';
+  else if (h < 260) name = 'blue';
+  else if (h < 300) name = 'purple';
+  else name = 'pink';
+
+  if (l < 0.3) return 'dark ' + name;
+  if (l > 0.7) return 'light ' + name;
+  return name;
+}
+
+function rgbToHex(r, g, b) {
+  return '#' + [r, g, b].map(v => v.toString(16).padStart(2, '0')).join('').toUpperCase();
+}
+
+app.post('/api/recolor', async (req, res) => {
   const token = process.env.REPLICATE_API_TOKEN;
   if (!token) return res.status(400).json({ error: 'AI not configured' });
 
   try {
     const Replicate = require('replicate');
     const replicate = new Replicate({ auth: token });
-    const { image } = req.body;
+    const { image, colors } = req.body;
 
     if (!image) return res.status(400).json({ error: 'No image provided' });
+    if (!colors || !colors.length) return res.status(400).json({ error: 'No colors provided' });
 
-    console.log('Starting segmentation, image size:', Math.round(image.length / 1024), 'KB');
+    const colorDescs = colors.map(c => {
+      const name = rgbToColorName(c[0], c[1], c[2]);
+      const hex = rgbToHex(c[0], c[1], c[2]);
+      return `${name} (${hex})`;
+    });
+
+    let prompt;
+    if (colorDescs.length === 1) {
+      prompt = `Change the color of the clothing garment to ${colorDescs[0]}, keep everything else the same`;
+    } else if (colorDescs.length === 2) {
+      prompt = `Change the main color of the clothing to ${colorDescs[0]} and the secondary color to ${colorDescs[1]}, keep everything else the same`;
+    } else {
+      prompt = `Change the main color of the clothing to ${colorDescs[0]}, secondary to ${colorDescs[1]}, accent to ${colorDescs[2]}, keep everything else the same`;
+    }
+
+    console.log('Recolor prompt:', prompt);
+    console.log('Image size:', Math.round(image.length / 1024), 'KB');
 
     const output = await replicate.run(
-      'cjwbw/rembg:fb8af171cfa1616ddcf1242c093f9c46bcada5ad4cf6f2fbe8b81b330ec5c003',
-      { input: { image } }
+      'timothybrooks/instruct-pix2pix',
+      {
+        input: {
+          image,
+          prompt,
+          num_inference_steps: 30,
+          image_guidance_scale: 1.2,
+          guidance_scale: 9
+        }
+      }
     );
 
-    console.log('Replicate output type:', typeof output, output ? output.constructor?.name : 'null');
+    console.log('Replicate output type:', typeof output, Array.isArray(output) ? 'array[' + output.length + ']' : '');
 
-    let maskBuffer;
+    let resultBuffer;
 
-    if (typeof output === 'string') {
+    if (Array.isArray(output) && output.length > 0) {
+      const url = typeof output[0] === 'string' ? output[0] : output[0]?.url || String(output[0]);
+      const resp = await fetch(url);
+      if (!resp.ok) throw new Error('Failed to download result: ' + resp.status);
+      resultBuffer = Buffer.from(await resp.arrayBuffer());
+    } else if (typeof output === 'string') {
       const resp = await fetch(output);
-      if (!resp.ok) throw new Error('Failed to fetch mask image: ' + resp.status);
-      maskBuffer = Buffer.from(await resp.arrayBuffer());
+      resultBuffer = Buffer.from(await resp.arrayBuffer());
     } else if (output && typeof output[Symbol.asyncIterator] === 'function') {
       const chunks = [];
       for await (const chunk of output) {
         chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
       }
-      maskBuffer = Buffer.concat(chunks);
+      resultBuffer = Buffer.concat(chunks);
     } else if (output && output.url) {
       const resp = await fetch(output.url);
-      maskBuffer = Buffer.from(await resp.arrayBuffer());
-    } else if (Buffer.isBuffer(output)) {
-      maskBuffer = output;
+      resultBuffer = Buffer.from(await resp.arrayBuffer());
     } else {
-      console.log('Unexpected output format, trying String:', String(output).slice(0, 200));
-      const resp = await fetch(String(output));
-      maskBuffer = Buffer.from(await resp.arrayBuffer());
+      throw new Error('Unexpected output format from AI model');
     }
 
-    console.log('Mask buffer size:', maskBuffer.length, 'bytes');
-    const maskBase64 = 'data:image/png;base64,' + maskBuffer.toString('base64');
-    res.json({ mask: maskBase64 });
+    console.log('Result buffer size:', resultBuffer.length, 'bytes');
+    const resultBase64 = 'data:image/png;base64,' + resultBuffer.toString('base64');
+    res.json({ result: resultBase64 });
   } catch (err) {
-    console.error('Segmentation error:', err.message);
+    console.error('Recolor error:', err.message);
     console.error('Stack:', err.stack);
     res.status(500).json({ error: err.message });
   }

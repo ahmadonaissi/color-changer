@@ -409,33 +409,40 @@
 
       if (aiAvailable) {
         setProgress(0.05);
-        toast('Sending image to AI...', 10000);
+        toast('AI is generating the recolored image...', 20000);
 
         const smallImage = resizeForApi(img, 1024);
         setProgress(0.1);
 
-        const resp = await fetch('/api/segment', {
+        const resp = await fetch('/api/recolor', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ image: smallImage })
+          body: JSON.stringify({ image: smallImage, colors: job.colors })
         });
 
         if (!resp.ok) {
           const errData = await resp.json().catch(() => ({}));
-          throw new Error(errData.error || 'AI segmentation failed (status ' + resp.status + ')');
+          throw new Error(errData.error || 'AI recoloring failed (status ' + resp.status + ')');
         }
 
-        const { mask } = await resp.json();
-        setProgress(0.4);
-        toast('Recoloring garment...', 5000);
+        const { result: resultDataUrl } = await resp.json();
+        setProgress(0.9);
 
-        const maskImg = await loadImage(mask);
-        const maskCanvas = document.createElement('canvas');
-        maskCanvas.width = canvas.width;
-        maskCanvas.height = canvas.height;
-        maskCanvas.getContext('2d').drawImage(maskImg, 0, 0, canvas.width, canvas.height);
+        const resultImg = await loadImage(resultDataUrl);
+        const resultCanvas = document.createElement('canvas');
+        resultCanvas.width = resultImg.naturalWidth;
+        resultCanvas.height = resultImg.naturalHeight;
+        resultCanvas.getContext('2d').drawImage(resultImg, 0, 0);
 
-        result = await engine.recolorWithMask(canvas, maskCanvas, job.colors, (p) => setProgress(0.4 + p * 0.6));
+        result = {
+          canvas: resultCanvas,
+          regions: job.colors.map((c) => ({
+            originalColor: [128, 128, 128],
+            targetColor: c,
+            size: 0,
+            percentage: 0
+          }))
+        };
       } else {
         const scaleX = canvas.width / img.naturalWidth;
         const scaleY = canvas.height / img.naturalHeight;
@@ -495,14 +502,20 @@
     const info = $('#regionInfo');
     info.innerHTML = '';
     if (job.regions) {
-      job.regions.forEach((r) => {
+      job.regions.forEach((r, i) => {
         if (!r.targetColor) return;
+        const hex = '#' + r.targetColor.map(v => v.toString(16).padStart(2, '0')).join('').toUpperCase();
         const chip = document.createElement('div');
         chip.className = 'region-chip';
-        chip.innerHTML = `<span class="swatch" style="background:rgb(${r.originalColor.join(',')})"></span>
-          <span>&#8594;</span>
-          <span class="swatch" style="background:rgb(${r.targetColor.join(',')})"></span>
-          <span>${r.percentage}%</span>`;
+        if (r.percentage > 0) {
+          chip.innerHTML = `<span class="swatch" style="background:rgb(${r.originalColor.join(',')})"></span>
+            <span>&#8594;</span>
+            <span class="swatch" style="background:rgb(${r.targetColor.join(',')})"></span>
+            <span>${r.percentage}%</span>`;
+        } else {
+          chip.innerHTML = `<span class="swatch" style="background:rgb(${r.targetColor.join(',')})"></span>
+            <span>${colorLabels[i] || 'Color'}: ${hex}</span>`;
+        }
         info.appendChild(chip);
       });
     }
