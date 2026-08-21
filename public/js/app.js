@@ -556,7 +556,10 @@
             ${job.status === 'error' ? 'Error' : ''}
           </span>
           <div class="queue-colors">
-            ${job.colors.map(c => `<span class="dot" style="background:rgb(${c.join(',')})"></span>`).join('')}
+            ${job.colors.map(c => {
+              const hex = '#' + c.map(v => v.toString(16).padStart(2, '0')).join('').toUpperCase();
+              return `<span class="dot" style="background:rgb(${c.join(',')})"></span><span class="hex">${hex}</span>`;
+            }).join('')}
           </div>
         </div>
       </div>`).join('');

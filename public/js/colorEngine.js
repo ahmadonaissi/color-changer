@@ -207,11 +207,12 @@ class ColorEngine {
         const idx = i * 4;
         const r = sd[idx], g = sd[idx + 1], b = sd[idx + 2];
         const [ph, ps, pl] = this.rgbToHsl(r, g, b);
-        const [th, ts] = targetHsls.get(cluster);
-        const [ch, cs] = centroidHsl.get(cluster);
+        const [th, ts, tl] = targetHsls.get(cluster);
+        const [ch, cs, cl] = centroidHsl.get(cluster);
 
         let newS = cs > 5 ? Math.min(100, ts * (ps / cs)) : ts * 0.6;
-        const [nr, ng, nb] = this.hslToRgb(th, newS, pl);
+        let newL = cl > 1 ? Math.min(100, Math.max(0, tl * (pl / cl))) : tl;
+        const [nr, ng, nb] = this.hslToRgb(th, newS, newL);
         rd[idx] = nr; rd[idx + 1] = ng; rd[idx + 2] = nb;
       }
       if (onProgress) onProgress(0.6 + 0.35 * (end / garmentIndices.length));
@@ -314,17 +315,13 @@ class ColorEngine {
 
         const r = data[idx], g = data[idx + 1], b = data[idx + 2];
         const [ph, ps, pl] = this.rgbToHsl(r, g, b);
-        const [th, ts, _] = targetHsls.get(cluster);
+        const [th, ts, tl] = targetHsls.get(cluster);
         const [ch, cs, cl] = centroidHsl.get(cluster);
 
-        let newS;
-        if (cs > 5) {
-          newS = Math.min(100, ts * (ps / cs));
-        } else {
-          newS = ts * 0.6;
-        }
+        let newS = cs > 5 ? Math.min(100, ts * (ps / cs)) : ts * 0.6;
+        let newL = cl > 1 ? Math.min(100, Math.max(0, tl * (pl / cl))) : tl;
 
-        const [nr, ng, nb] = this.hslToRgb(th, newS, pl);
+        const [nr, ng, nb] = this.hslToRgb(th, newS, newL);
         rd[idx] = nr;
         rd[idx + 1] = ng;
         rd[idx + 2] = nb;
