@@ -98,19 +98,52 @@ app.post('/api/segment', async (req, res) => {
     const replicate = new Replicate({ auth: token });
     const { image } = req.body;
 
+    // Upload base64 image to a temporary URL for Replicate
+    let imageInput = image;
+    if (image.startsWith('data:')) {
+      const base64Data = image.split(',')[1];
+      const mimeMatch = image.match(/data:([^;]+);/);
+      const mime = mimeMatch ? mimeMatch[1] : 'image/png';
+      const buffer = Buffer.from(base64Data, 'base64');
+      const blob = new Blob([buffer], { type: mime });
+      const file = new File([blob], 'input.png', { type: mime });
+      imageInput = file;
+    }
+
     const output = await replicate.run(
-      'cjwbw/rembg:fb8af171cfa1616ddcf1242c093f9c46bcada5ad4cf6f2fbe8b81b330ec5c003',
-      { input: { image } }
+      'lucataco/remove-bg:95fcc2a26d3899cd6c2691c900571aefd46ee4d8f3c09600a2fdbcb3c7c4f66c',
+      { input: { image: imageInput } }
     );
 
-    const maskUrl = typeof output === 'string' ? output : output?.url || output;
-    const maskResp = await fetch(maskUrl);
-    const maskBuffer = Buffer.from(await maskResp.arrayBuffer());
-    const maskBase64 = 'data:image/png;base64,' + maskBuffer.toString('base64');
+    // Output can be a ReadableStream, URL string, or object
+    let maskBuffer;
+    if (output instanceof ReadableStream || (output && typeof output.getReader === 'function')) {
+      const reader = output.getReader();
+      const chunks = [];
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+      }
+      maskBuffer = Buffer.concat(chunks);
+    } else if (typeof output === 'string') {
+      const maskResp = await fetch(output);
+      maskBuffer = Buffer.from(await maskResp.arrayBuffer());
+    } else if (output && output.url) {
+      const maskResp = await fetch(output.url);
+      maskBuffer = Buffer.from(await maskResp.arrayBuffer());
+    } else if (Buffer.isBuffer(output)) {
+      maskBuffer = output;
+    } else {
+      // Try treating it as an iterable of bytes
+      const maskResp = await fetch(String(output));
+      maskBuffer = Buffer.from(await maskResp.arrayBuffer());
+    }
 
+    const maskBase64 = 'data:image/png;base64,' + maskBuffer.toString('base64');
     res.json({ mask: maskBase64 });
   } catch (err) {
-    console.error('Segmentation error:', err);
+    console.error('Segmentation error:', err.message, err.stack);
     res.status(500).json({ error: 'Segmentation failed: ' + err.message });
   }
 });
