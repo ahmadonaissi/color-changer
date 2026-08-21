@@ -148,12 +148,20 @@ app.post('/api/recolor', async (req, res) => {
     });
 
     let prompt;
+    let steps = 30;
+    let guidanceScale = 9;
+    let imageGuidance = 1.2;
+
     if (colorDescs.length === 1) {
-      prompt = `Change the color of the clothing garment to ${colorDescs[0]}, keep everything else the same`;
+      prompt = `Change the color of the clothing to ${colorDescs[0]}. Keep the same fabric texture, folds, shadows and lighting. Do not change anything else in the image.`;
     } else if (colorDescs.length === 2) {
-      prompt = `Change the main color of the clothing to ${colorDescs[0]} and the secondary color to ${colorDescs[1]}, keep everything else the same`;
+      prompt = `Recolor the clothing garment: make the main body area ${colorDescs[0]} and any secondary elements like trim, waistband, stripes or accents ${colorDescs[1]}. Keep the same fabric texture and lighting. Do not change anything else.`;
+      steps = 40;
+      guidanceScale = 11;
     } else {
-      prompt = `Change the main color of the clothing to ${colorDescs[0]}, secondary to ${colorDescs[1]}, accent to ${colorDescs[2]}, keep everything else the same`;
+      prompt = `Recolor the clothing garment: the dominant large area should be ${colorDescs[0]}, secondary sections ${colorDescs[1]}, and small accent details ${colorDescs[2]}. Keep the same fabric texture and lighting. Do not change anything else.`;
+      steps = 45;
+      guidanceScale = 12;
     }
 
     console.log('Recolor prompt:', prompt);
@@ -165,9 +173,9 @@ app.post('/api/recolor', async (req, res) => {
         input: {
           image,
           prompt,
-          num_inference_steps: 30,
-          image_guidance_scale: 1.2,
-          guidance_scale: 9
+          num_inference_steps: steps,
+          image_guidance_scale: imageGuidance,
+          guidance_scale: guidanceScale
         }
       }
     );
