@@ -31,7 +31,6 @@
     aiAvailable = data.available;
     if (aiAvailable) {
       toast('AI garment detection enabled', 2000);
-      $('#clearMarkersBtn').style.display = 'none';
     }
   }).catch(() => {});
 
@@ -74,7 +73,6 @@
       scannedColors = colors;
       renderColorSlots();
       updateHint();
-      updateProcessBtn();
       $('#receivedColorsSection').style.display = scannedColors.length > 0 ? '' : 'none';
     });
     socket.on('image-update', ({ image, name }) => {
@@ -84,7 +82,6 @@
         showPreview(image);
         if (name) $('#pieceName').value = name;
         updateHint();
-        updateProcessBtn();
         toast('Image received from phone');
       });
     });
@@ -97,6 +94,7 @@
         showPreview(job.image);
         $('#pieceName').value = job.name || '';
         enqueueJob(job.name, job.image, job.colors, []);
+        resetWorkspace();
       });
     });
   }
@@ -155,7 +153,6 @@
       scannedColors.push(color);
       renderColorSlots();
       updateHint();
-      updateProcessBtn();
       crosshair.style.left = e.clientX - container.getBoundingClientRect().left + 'px';
       crosshair.style.top = e.clientY - container.getBoundingClientRect().top + 'px';
       crosshair.style.borderColor = `rgb(${color.join(',')})`;
@@ -172,7 +169,6 @@
     scannedColors.push([parseInt(hex.slice(1, 3), 16), parseInt(hex.slice(3, 5), 16), parseInt(hex.slice(5, 7), 16)]);
     renderColorSlots();
     updateHint();
-    updateProcessBtn();
   });
 
   // ---- COLOR SLOTS ----
@@ -202,8 +198,8 @@
         scannedColors.splice(idx, 1);
         renderColorSlots();
         updateHint();
-        updateProcessBtn();
         clearMarkers();
+        if (socket && mode === 'paired') socket.emit('colors-update', { roomId, colors: scannedColors });
       }
     }
   });
@@ -224,8 +220,22 @@
     if (e.dataTransfer.files.length) handleImageFile(e.dataTransfer.files[0]);
   });
   imageInput.addEventListener('change', (e) => { if (e.target.files.length) handleImageFile(e.target.files[0]); });
+
   $('#changeImageBtn').addEventListener('click', () => imageInput.click());
-  $('#clearMarkersBtn').addEventListener('click', clearMarkers);
+
+  $('#removeImageBtn').addEventListener('click', () => {
+    currentImage = null;
+    currentImageSrc = null;
+    imageReady = false;
+    clearMarkers();
+    $('#previewImage').style.display = 'none';
+    uploadArea.classList.remove('has-image');
+    uploadArea.querySelector('.upload-icon').style.display = '';
+    uploadArea.querySelector('p').style.display = '';
+    $('#changeImageBar').style.display = 'none';
+    imageInput.value = '';
+    toast('Image removed');
+  });
 
   function handleImageFile(file) {
     const reader = new FileReader();
@@ -237,7 +247,6 @@
         imageReady = true;
         clearMarkers();
         updateHint();
-        updateProcessBtn();
         $('#changeImageBar').style.display = '';
       });
     };
@@ -280,14 +289,12 @@
     markerOverlay.appendChild(dot);
     toast(`${colorLabels[markerPoints.length - 1]} color placed`);
     updateHint();
-    updateProcessBtn();
   });
 
   function clearMarkers() {
     markerPoints = [];
     markerOverlay.querySelectorAll('.marker-dot').forEach(d => d.remove());
     updateHint();
-    updateProcessBtn();
   }
 
   function updateHint() {
@@ -316,14 +323,6 @@
     }
   }
 
-  function updateProcessBtn() {
-    if (aiAvailable) {
-      $('#processBtn').disabled = !(scannedColors.length > 0 && imageReady);
-    } else {
-      $('#processBtn').disabled = !(scannedColors.length > 0 && imageReady && markerPoints.length >= scannedColors.length);
-    }
-  }
-
   // ---- RESIZE FOR API ----
   function resizeForApi(img, maxDim) {
     let w = img.naturalWidth, h = img.naturalHeight;
@@ -338,10 +337,25 @@
     return c.toDataURL('image/jpeg', 0.85);
   }
 
-  // ---- PROCESSING ----
+  // ---- RECOLOR BUTTON WITH VALIDATION ----
   $('#processBtn').addEventListener('click', () => {
-    if (!currentImage || scannedColors.length === 0) return;
-    if (!aiAvailable && markerPoints.length < scannedColors.length) return;
+    if (!imageReady && scannedColors.length === 0) {
+      toast('Please upload an image and scan at least one color');
+      return;
+    }
+    if (!imageReady) {
+      toast('Please upload an image first');
+      return;
+    }
+    if (scannedColors.length === 0) {
+      toast('Please scan at least one color first');
+      return;
+    }
+    if (!aiAvailable && markerPoints.length < scannedColors.length) {
+      toast('Please tap on the garment to place all color markers');
+      return;
+    }
+
     const name = $('#pieceName').value.trim() || `Piece ${queue.length + 1}`;
     enqueueJob(name, currentImageSrc, [...scannedColors], [...markerPoints]);
     resetWorkspace();
@@ -354,7 +368,6 @@
     imageReady = false;
     clearMarkers();
     renderColorSlots();
-    updateProcessBtn();
     $('#previewImage').style.display = 'none';
     uploadArea.classList.remove('has-image');
     uploadArea.querySelector('.upload-icon').style.display = '';
@@ -441,9 +454,11 @@
       }
     } catch (err) {
       job.status = 'error';
+      job.errorMsg = err.message;
       console.error('Processing error:', err);
-      toast('Error: ' + err.message, 6000);
+      displayError(job);
       renderQueue();
+      toast('Error: ' + err.message, 6000);
     }
 
     processing = false;
@@ -473,6 +488,7 @@
   function displayResult(job) {
     const container = $('#resultContainer');
     container.classList.add('visible');
+    $('#resultTitle').textContent = 'Result — ' + job.name;
     const rc = $('#resultCanvas');
     rc.width = job.result.width; rc.height = job.result.height;
     rc.getContext('2d').drawImage(job.result, 0, 0);
@@ -491,6 +507,32 @@
       });
     }
     activeJobId = job.id;
+    $('#enhanceBtn').style.display = '';
+    $('#downloadBtn').style.display = '';
+    $('#saveFolderBtn').style.display = '';
+    container.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    renderQueue();
+  }
+
+  function displayError(job) {
+    const container = $('#resultContainer');
+    container.classList.add('visible');
+    $('#resultTitle').textContent = 'Error — ' + job.name;
+    const rc = $('#resultCanvas');
+    loadImage(job.imageSrc).then(img => {
+      const c = imageToCanvas(img, 800);
+      rc.width = c.width; rc.height = c.height;
+      rc.getContext('2d').drawImage(c, 0, 0);
+    });
+    const info = $('#regionInfo');
+    info.innerHTML = `<div class="region-chip" style="background:var(--error);color:white;padding:10px 16px">
+      ${job.errorMsg || 'Processing failed. Try a different image.'}
+    </div>`;
+    activeJobId = job.id;
+    $('#enhanceBtn').style.display = 'none';
+    $('#downloadBtn').style.display = 'none';
+    $('#saveFolderBtn').style.display = 'none';
+    container.scrollIntoView({ behavior: 'smooth', block: 'center' });
     renderQueue();
   }
 
@@ -522,6 +564,7 @@
       el.addEventListener('click', () => {
         const job = queue.find(j => j.id === el.dataset.id);
         if (job && job.status === 'complete') displayResult(job);
+        if (job && job.status === 'error') displayError(job);
       });
     });
   }
@@ -530,7 +573,6 @@
   $('#newPieceBtn').addEventListener('click', () => {
     $('#resultContainer').classList.remove('visible');
     uploadArea.scrollIntoView({ behavior: 'smooth' });
-    imageInput.click();
   });
 
   // ---- ENHANCE ----

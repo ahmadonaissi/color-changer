@@ -52,7 +52,7 @@
             </div>
           </div>
           <p style="font-size:0.75rem;color:var(--text3);margin-top:10px">
-            Scan colors on your phone, upload image here on laptop
+            Scan colors on your phone, upload image here or from phone
           </p>
         </div>
       </div>
@@ -107,12 +107,12 @@
       </div>
       <div class="change-image-bar" id="changeImageBar" style="display:none">
         <button class="btn-secondary" id="changeImageBtn">Change Image</button>
-        <button class="btn-secondary" id="clearMarkersBtn">Clear Markers</button>
+        <button class="btn-secondary" id="removeImageBtn" style="color:var(--error)">Remove Image</button>
       </div>
 
       <div class="submit-bar">
         <input type="text" id="pieceName" placeholder="Piece name (e.g. T-Shirt Summer)">
-        <button class="btn-primary" id="processBtn" disabled>Recolor</button>
+        <button class="btn-primary" id="processBtn">Recolor</button>
       </div>
 
       <div class="progress-bar" id="progressBar">
@@ -121,7 +121,7 @@
 
       <div class="result-container" id="resultContainer">
         <div class="result-header">
-          <h3>Result</h3>
+          <h3 id="resultTitle">Result</h3>
         </div>
         <div class="result-image">
           <canvas id="resultCanvas"></canvas>
@@ -131,7 +131,7 @@
           <button class="btn-secondary" id="enhanceBtn">Enhance Quality</button>
           <button class="btn-primary" id="downloadBtn">Download</button>
           <button class="btn-success" id="saveFolderBtn">Create Folder</button>
-          <button class="btn-primary" id="newPieceBtn" style="background:var(--accent)">New Piece</button>
+          <button class="btn-accent" id="newPieceBtn">New Piece</button>
         </div>
       </div>
     </div>

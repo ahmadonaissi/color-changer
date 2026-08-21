@@ -40,6 +40,13 @@
       scannedColors = colors;
       renderSlots();
       updateSubmitBtn();
+      if (colors.length === 0) {
+        imageDataUrl = null;
+        $('#mobilePreview').classList.remove('visible');
+        $('#mobilePieceName').value = '';
+        fileInput.value = '';
+        toast('Ready for next piece — scan new colors');
+      }
     });
   }
 
@@ -184,12 +191,12 @@
 
     toast('Submitted! Check the laptop for results.');
 
-    // Reset for next piece
     imageDataUrl = null;
     scannedColors = [];
     renderSlots();
     $('#mobilePreview').classList.remove('visible');
     $('#mobilePieceName').value = '';
+    fileInput.value = '';
     updateSubmitBtn();
   });
 })();

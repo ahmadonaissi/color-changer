@@ -56,6 +56,12 @@ button:active { transform: scale(0.97); }
   color: #0a0a12;
 }
 
+.btn-accent {
+  background: var(--accent);
+  color: white;
+}
+.btn-accent:hover { background: var(--accent-dim); }
+
 .btn-icon {
   background: none;
   color: var(--text2);
