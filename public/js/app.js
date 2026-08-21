@@ -31,6 +31,7 @@
     aiAvailable = data.available;
     if (aiAvailable) {
       toast('AI garment detection enabled', 2000);
+      $('#clearMarkersBtn').style.display = 'none';
     }
   }).catch(() => {});
 
@@ -323,6 +324,20 @@
     }
   }
 
+  // ---- RESIZE FOR API ----
+  function resizeForApi(img, maxDim) {
+    let w = img.naturalWidth, h = img.naturalHeight;
+    if (Math.max(w, h) > maxDim) {
+      const s = maxDim / Math.max(w, h);
+      w = Math.round(w * s);
+      h = Math.round(h * s);
+    }
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    c.getContext('2d').drawImage(img, 0, 0, w, h);
+    return c.toDataURL('image/jpeg', 0.85);
+  }
+
   // ---- PROCESSING ----
   $('#processBtn').addEventListener('click', () => {
     if (!currentImage || scannedColors.length === 0) return;
@@ -380,21 +395,33 @@
       let result;
 
       if (aiAvailable) {
+        setProgress(0.05);
+        toast('Sending image to AI...', 10000);
+
+        const smallImage = resizeForApi(img, 1024);
         setProgress(0.1);
-        toast('AI is detecting the garment...', 5000);
+
         const resp = await fetch('/api/segment', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ image: job.imageSrc })
+          body: JSON.stringify({ image: smallImage })
         });
-        if (!resp.ok) throw new Error('AI segmentation failed');
+
+        if (!resp.ok) {
+          const errData = await resp.json().catch(() => ({}));
+          throw new Error(errData.error || 'AI segmentation failed (status ' + resp.status + ')');
+        }
+
         const { mask } = await resp.json();
         setProgress(0.4);
+        toast('Recoloring garment...', 5000);
+
         const maskImg = await loadImage(mask);
         const maskCanvas = document.createElement('canvas');
         maskCanvas.width = canvas.width;
         maskCanvas.height = canvas.height;
         maskCanvas.getContext('2d').drawImage(maskImg, 0, 0, canvas.width, canvas.height);
+
         result = await engine.recolorWithMask(canvas, maskCanvas, job.colors, (p) => setProgress(0.4 + p * 0.6));
       } else {
         const scaleX = canvas.width / img.naturalWidth;
@@ -414,7 +441,8 @@
       }
     } catch (err) {
       job.status = 'error';
-      toast('Error: ' + err.message);
+      console.error('Processing error:', err);
+      toast('Error: ' + err.message, 6000);
       renderQueue();
     }
 
