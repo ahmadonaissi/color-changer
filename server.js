@@ -160,7 +160,7 @@ app.post('/api/recolor', async (req, res) => {
     console.log('Image size:', Math.round(image.length / 1024), 'KB');
 
     const output = await replicate.run(
-      'timothybrooks/instruct-pix2pix',
+      'timothybrooks/instruct-pix2pix:30c1d0b916a6f8efce20493f5d61ee27491ab2a60437c13c588468b9810ec23f',
       {
         input: {
           image,
