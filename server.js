@@ -4,6 +4,8 @@ const { Server } = require('socket.io');
 const QRCode = require('qrcode');
 const crypto = require('crypto');
 const path = require('path');
+const fs = require('fs');
+const os = require('os');
 
 const app = express();
 const server = http.createServer(app);
@@ -85,10 +87,6 @@ setInterval(() => {
   }
 }, 600000);
 
-app.get('/api/ai-status', (req, res) => {
-  res.json({ available: !!process.env.REPLICATE_API_TOKEN });
-});
-
 function rgbToColorName(r, g, b) {
   const max = Math.max(r, g, b);
   const min = Math.min(r, g, b);
@@ -129,85 +127,138 @@ function rgbToHex(r, g, b) {
   return '#' + [r, g, b].map(v => v.toString(16).padStart(2, '0')).join('').toUpperCase();
 }
 
-app.post('/api/recolor', async (req, res) => {
-  const token = process.env.REPLICATE_API_TOKEN;
-  if (!token) return res.status(400).json({ error: 'AI not configured' });
+app.get('/api/ai-status', (req, res) => {
+  const provider = process.env.OPENAI_API_KEY ? 'openai' : process.env.REPLICATE_API_TOKEN ? 'replicate' : null;
+  res.json({ available: !!provider, provider });
+});
+
+// ---- OPENAI RECOLOR ----
+async function recolorWithOpenAI(image, colors) {
+  const OpenAI = require('openai');
+  const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+  const base64Data = image.replace(/^data:image\/\w+;base64,/, '');
+  const buffer = Buffer.from(base64Data, 'base64');
+
+  const colorDescs = colors.map(c => {
+    const hex = rgbToHex(c[0], c[1], c[2]);
+    const name = rgbToColorName(c[0], c[1], c[2]);
+    return { hex, name };
+  });
+
+  let prompt;
+  if (colorDescs.length === 1) {
+    prompt = `Change the color of the clothing/garment in this image to exactly ${colorDescs[0].name} (hex ${colorDescs[0].hex}). The output garment color must precisely match hex ${colorDescs[0].hex}. Keep the exact same garment shape, fabric texture, folds, wrinkles, shadows, and lighting. Do not change the background, skin, hair, or anything else in the image.`;
+  } else if (colorDescs.length === 2) {
+    prompt = `Recolor the clothing/garment in this image: the main body area must be exactly ${colorDescs[0].name} (hex ${colorDescs[0].hex}) and any secondary elements like trim, waistband, stripes, or accents must be exactly ${colorDescs[1].name} (hex ${colorDescs[1].hex}). Colors must precisely match these hex codes. Keep the garment shape, fabric texture, and lighting identical. Do not change the background or anything else.`;
+  } else {
+    prompt = `Recolor the clothing/garment: dominant area exactly ${colorDescs[0].name} (hex ${colorDescs[0].hex}), secondary sections exactly ${colorDescs[1].name} (hex ${colorDescs[1].hex}), accent details exactly ${colorDescs[2].name} (hex ${colorDescs[2].hex}). Match hex codes precisely. Keep garment shape, texture, lighting identical. Do not change background or anything else.`;
+  }
+
+  console.log('OpenAI prompt:', prompt);
+
+  const tempPath = path.join(os.tmpdir(), `garment-${Date.now()}.png`);
+  fs.writeFileSync(tempPath, buffer);
 
   try {
-    const Replicate = require('replicate');
-    const replicate = new Replicate({ auth: token });
-    const { image, colors } = req.body;
-
-    if (!image) return res.status(400).json({ error: 'No image provided' });
-    if (!colors || !colors.length) return res.status(400).json({ error: 'No colors provided' });
-
-    const colorDescs = colors.map(c => {
-      const name = rgbToColorName(c[0], c[1], c[2]);
-      const hex = rgbToHex(c[0], c[1], c[2]);
-      return `${name} (${hex})`;
+    const response = await openai.images.edit({
+      model: 'gpt-image-1',
+      image: fs.createReadStream(tempPath),
+      prompt,
+      size: '1024x1024',
     });
 
-    let prompt;
-    let steps = 30;
-    let guidanceScale = 9;
-    let imageGuidance = 1.2;
+    const resultData = response.data[0];
 
-    if (colorDescs.length === 1) {
-      prompt = `Change the color of the clothing to ${colorDescs[0]}. Keep the same fabric texture, folds, shadows and lighting. Do not change anything else in the image.`;
-    } else if (colorDescs.length === 2) {
-      prompt = `Recolor the clothing garment: make the main body area ${colorDescs[0]} and any secondary elements like trim, waistband, stripes or accents ${colorDescs[1]}. Keep the same fabric texture and lighting. Do not change anything else.`;
-      steps = 40;
-      guidanceScale = 11;
-    } else {
-      prompt = `Recolor the clothing garment: the dominant large area should be ${colorDescs[0]}, secondary sections ${colorDescs[1]}, and small accent details ${colorDescs[2]}. Keep the same fabric texture and lighting. Do not change anything else.`;
-      steps = 45;
-      guidanceScale = 12;
+    if (resultData.b64_json) {
+      return 'data:image/png;base64,' + resultData.b64_json;
+    } else if (resultData.url) {
+      const resp = await fetch(resultData.url);
+      const buf = Buffer.from(await resp.arrayBuffer());
+      return 'data:image/png;base64,' + buf.toString('base64');
     }
 
-    console.log('Recolor prompt:', prompt);
-    console.log('Image size:', Math.round(image.length / 1024), 'KB');
+    throw new Error('No image in OpenAI response');
+  } finally {
+    try { fs.unlinkSync(tempPath); } catch (e) {}
+  }
+}
 
-    const output = await replicate.run(
-      'timothybrooks/instruct-pix2pix:30c1d0b916a6f8efce20493f5d61ee27491ab2a60437c13c588468b9810ec23f',
-      {
-        input: {
-          image,
-          prompt,
-          num_inference_steps: steps,
-          image_guidance_scale: imageGuidance,
-          guidance_scale: guidanceScale
-        }
+// ---- REPLICATE RECOLOR (fallback) ----
+async function recolorWithReplicate(image, colors) {
+  const Replicate = require('replicate');
+  const replicate = new Replicate({ auth: process.env.REPLICATE_API_TOKEN });
+
+  const colorDescs = colors.map(c => {
+    const hex = rgbToHex(c[0], c[1], c[2]);
+    const name = rgbToColorName(c[0], c[1], c[2]);
+    return `${name} (${hex})`;
+  });
+
+  let prompt;
+  if (colorDescs.length === 1) {
+    prompt = `Change the color of the clothing to ${colorDescs[0]}. Keep the same fabric texture, folds, shadows and lighting. Do not change anything else.`;
+  } else if (colorDescs.length === 2) {
+    prompt = `Recolor the clothing: make the main body area ${colorDescs[0]} and any secondary elements like trim, waistband, stripes or accents ${colorDescs[1]}. Keep the same fabric texture and lighting.`;
+  } else {
+    prompt = `Recolor the clothing: dominant area ${colorDescs[0]}, secondary sections ${colorDescs[1]}, small accents ${colorDescs[2]}. Keep fabric texture and lighting.`;
+  }
+
+  console.log('Replicate prompt:', prompt);
+
+  const output = await replicate.run(
+    'timothybrooks/instruct-pix2pix:30c1d0b916a6f8efce20493f5d61ee27491ab2a60437c13c588468b9810ec23f',
+    {
+      input: {
+        image,
+        prompt,
+        num_inference_steps: colors.length > 1 ? 40 : 30,
+        image_guidance_scale: 1.2,
+        guidance_scale: colors.length > 1 ? 11 : 9
       }
-    );
+    }
+  );
 
-    console.log('Replicate output type:', typeof output, Array.isArray(output) ? 'array[' + output.length + ']' : '');
+  let resultBuffer;
+  if (Array.isArray(output) && output.length > 0) {
+    const url = typeof output[0] === 'string' ? output[0] : output[0]?.url || String(output[0]);
+    const resp = await fetch(url);
+    resultBuffer = Buffer.from(await resp.arrayBuffer());
+  } else if (typeof output === 'string') {
+    const resp = await fetch(output);
+    resultBuffer = Buffer.from(await resp.arrayBuffer());
+  } else if (output && typeof output[Symbol.asyncIterator] === 'function') {
+    const chunks = [];
+    for await (const chunk of output) {
+      chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
+    }
+    resultBuffer = Buffer.concat(chunks);
+  } else {
+    throw new Error('Unexpected output format from Replicate');
+  }
 
-    let resultBuffer;
+  return 'data:image/png;base64,' + resultBuffer.toString('base64');
+}
 
-    if (Array.isArray(output) && output.length > 0) {
-      const url = typeof output[0] === 'string' ? output[0] : output[0]?.url || String(output[0]);
-      const resp = await fetch(url);
-      if (!resp.ok) throw new Error('Failed to download result: ' + resp.status);
-      resultBuffer = Buffer.from(await resp.arrayBuffer());
-    } else if (typeof output === 'string') {
-      const resp = await fetch(output);
-      resultBuffer = Buffer.from(await resp.arrayBuffer());
-    } else if (output && typeof output[Symbol.asyncIterator] === 'function') {
-      const chunks = [];
-      for await (const chunk of output) {
-        chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
-      }
-      resultBuffer = Buffer.concat(chunks);
-    } else if (output && output.url) {
-      const resp = await fetch(output.url);
-      resultBuffer = Buffer.from(await resp.arrayBuffer());
+app.post('/api/recolor', async (req, res) => {
+  const { image, colors } = req.body;
+
+  if (!image) return res.status(400).json({ error: 'No image provided' });
+  if (!colors || !colors.length) return res.status(400).json({ error: 'No colors provided' });
+
+  try {
+    let result;
+    if (process.env.OPENAI_API_KEY) {
+      console.log('Using OpenAI for recoloring');
+      result = await recolorWithOpenAI(image, colors);
+    } else if (process.env.REPLICATE_API_TOKEN) {
+      console.log('Using Replicate for recoloring');
+      result = await recolorWithReplicate(image, colors);
     } else {
-      throw new Error('Unexpected output format from AI model');
+      return res.status(400).json({ error: 'No AI provider configured' });
     }
 
-    console.log('Result buffer size:', resultBuffer.length, 'bytes');
-    const resultBase64 = 'data:image/png;base64,' + resultBuffer.toString('base64');
-    res.json({ result: resultBase64 });
+    res.json({ result });
   } catch (err) {
     console.error('Recolor error:', err.message);
     console.error('Stack:', err.stack);
