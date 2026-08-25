@@ -159,7 +159,7 @@ async function recolorWithOpenAI(image, colors) {
 
   console.log('OpenAI prompt:', prompt);
 
-  const imageFile = await openai.toFile(buffer, `garment.${ext}`, { type: mimeType });
+  const imageFile = await OpenAI.toFile(buffer, `garment.${ext}`, { type: mimeType });
 
   const response = await openai.images.edit({
     model: 'gpt-image-1',
