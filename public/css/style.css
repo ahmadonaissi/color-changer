@@ -505,6 +505,12 @@ button:active { transform: scale(0.97); }
   color: var(--text3);
   font-family: monospace;
 }
+.queue-quality {
+  font-size: 0.6rem;
+  color: var(--accent);
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}
 
 .spinner {
   display: inline-block;

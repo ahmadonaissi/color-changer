@@ -575,6 +575,7 @@
               return `<span class="dot" style="background:rgb(${c.join(',')})"></span><span class="hex">${hex}</span>`;
             }).join('')}
           </div>
+          <span class="queue-quality">${(job.quality || 'medium').toUpperCase()}</span>
         </div>
       </div>`).join('');
     list.querySelectorAll('.queue-item').forEach(el => {
@@ -594,9 +595,10 @@
     job.result = null;
     job.enhanced = false;
     job.regions = null;
+    job.quality = $('#qualityLevel').value;
     $('#resultContainer').classList.remove('visible');
     renderQueue();
-    toast('Regenerating "' + job.name + '"...');
+    toast('Regenerating "' + job.name + '" at ' + job.quality + ' quality...');
     processNext();
   });
 
