@@ -210,6 +210,7 @@ async function recolorWithSkinRemoval(openai, originalBuffer, prompt) {
     model: 'gpt-image-1',
     image: imageFile,
     prompt,
+    quality: 'low',
     size: '1024x1024',
   });
 
