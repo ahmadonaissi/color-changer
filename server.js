@@ -280,6 +280,7 @@ async function recolorWithOpenAI(image, colors) {
       model: 'gpt-image-1',
       image: imageFile,
       prompt,
+      quality: 'low',
       size: '1024x1024',
     });
     const resultBuf = extractOpenAIResult(response);
@@ -292,10 +293,16 @@ async function recolorWithOpenAI(image, colors) {
     }
     throw new Error('No image in OpenAI response');
   } catch (err) {
+    console.log('OpenAI error:', err.status, err.message);
     const isSafety = err.status === 400 && err.message && err.message.includes('safety');
     if (!isSafety) throw err;
-    console.log('OpenAI safety rejection — retrying with skin removal preprocessing');
-    return await recolorWithSkinRemoval(openai, buffer, prompt);
+    console.log('Safety rejection detected — retrying with skin removal...');
+    try {
+      return await recolorWithSkinRemoval(openai, buffer, prompt);
+    } catch (retryErr) {
+      console.error('Skin removal retry also failed:', retryErr.message);
+      throw new Error('Image was rejected by OpenAI safety filter. Try using a flat-lay or mannequin photo instead of an on-model photo.');
+    }
   }
 }
 
