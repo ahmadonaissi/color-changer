@@ -585,6 +585,20 @@
     });
   }
 
+  // ---- GENERATE AGAIN ----
+  $('#regenerateBtn').addEventListener('click', () => {
+    const job = queue.find(j => j.id === activeJobId);
+    if (!job) return;
+    job.status = 'pending';
+    job.result = null;
+    job.enhanced = false;
+    job.regions = null;
+    $('#resultContainer').classList.remove('visible');
+    renderQueue();
+    toast('Regenerating "' + job.name + '"...');
+    processNext();
+  });
+
   // ---- NEW PIECE ----
   $('#newPieceBtn').addEventListener('click', () => {
     $('#resultContainer').classList.remove('visible');
