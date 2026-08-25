@@ -514,112 +514,152 @@ async function programmaticRecolor(imageBuffer, targetColors) {
   const w = meta.width, h = meta.height;
   const pixels = await sharp(imageBuffer).removeAlpha().raw().toBuffer();
   const output = Buffer.from(pixels);
+  const total = w * h;
 
-  const sampleSize = Math.min(15, Math.floor(Math.min(w, h) * 0.04));
+  // Sample background from all 4 edges (not just corners)
   let bgR = 0, bgG = 0, bgB = 0, bgCount = 0;
-  for (let y = 0; y < sampleSize; y++) {
-    for (let x = 0; x < sampleSize; x++) {
-      for (const idx of [
-        (y * w + x) * 3,
-        (y * w + (w - 1 - x)) * 3,
-        ((h - 1 - y) * w + x) * 3,
-        ((h - 1 - y) * w + (w - 1 - x)) * 3
-      ]) {
-        bgR += pixels[idx]; bgG += pixels[idx + 1]; bgB += pixels[idx + 2];
-        bgCount++;
-      }
+  const edgeDepth = Math.max(3, Math.round(Math.min(w, h) * 0.03));
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (x >= edgeDepth && x < w - edgeDepth && y >= edgeDepth && y < h - edgeDepth) continue;
+      const idx = (y * w + x) * 3;
+      bgR += pixels[idx]; bgG += pixels[idx + 1]; bgB += pixels[idx + 2];
+      bgCount++;
     }
   }
   bgR = Math.round(bgR / bgCount);
   bgG = Math.round(bgG / bgCount);
   bgB = Math.round(bgB / bgCount);
-
   const bgLab = rgbToLab(bgR, bgG, bgB);
-  const targetLabs = targetColors.map(c => rgbToLab(c[0], c[1], c[2]));
 
-  const garmentIndices = [];
-  const garmentLabs = [];
+  // Pass 1: classify each pixel
+  const isGarment = new Uint8Array(total);
+  const allLabs = new Array(total);
 
-  for (let i = 0; i < w * h; i++) {
+  for (let i = 0; i < total; i++) {
     const idx = i * 3;
     const r = pixels[idx], g = pixels[idx + 1], b = pixels[idx + 2];
-
     const lab = rgbToLab(r, g, b);
-    const bgDist = Math.sqrt((lab[0]-bgLab[0])**2 + (lab[1]-bgLab[1])**2 + (lab[2]-bgLab[2])**2);
-    if (bgDist < 15) continue;
-    if (isSkinPixel(r, g, b)) continue;
+    allLabs[i] = lab;
 
-    garmentIndices.push(i);
-    garmentLabs.push(lab);
+    const bgDist = Math.sqrt((lab[0]-bgLab[0])**2 + (lab[1]-bgLab[1])**2 + (lab[2]-bgLab[2])**2);
+    if (bgDist < 20) continue;
+    if (isSkinPixel(r, g, b)) continue;
+    isGarment[i] = 1;
+  }
+
+  // Pass 2: spatial filtering — remove isolated garment pixels
+  // A pixel stays garment only if at least 5 of its 8 neighbors are also garment
+  const cleaned = new Uint8Array(total);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x;
+      if (!isGarment[i]) continue;
+      let neighbors = 0;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (dx === 0 && dy === 0) continue;
+          const nx = x + dx, ny = y + dy;
+          if (nx >= 0 && nx < w && ny >= 0 && ny < h && isGarment[ny * w + nx]) neighbors++;
+        }
+      }
+      if (neighbors >= 5) cleaned[i] = 1;
+    }
+  }
+
+  // Pass 3: erode once more to clean edges
+  const final = new Uint8Array(total);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x;
+      if (!cleaned[i]) continue;
+      let neighbors = 0;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (dx === 0 && dy === 0) continue;
+          const nx = x + dx, ny = y + dy;
+          if (nx >= 0 && nx < w && ny >= 0 && ny < h && cleaned[ny * w + nx]) neighbors++;
+        }
+      }
+      if (neighbors >= 4) final[i] = 1;
+    }
+  }
+
+  // Collect garment pixel data
+  const garmentIndices = [];
+  const garmentLabs = [];
+  for (let i = 0; i < total; i++) {
+    if (final[i]) {
+      garmentIndices.push(i);
+      garmentLabs.push(allLabs[i]);
+    }
   }
 
   if (garmentIndices.length === 0) {
     return sharp(output, { raw: { width: w, height: h, channels: 3 } }).png().toBuffer();
   }
 
-  if (targetColors.length === 1) {
-    const [tL, tA, tB] = targetLabs[0];
+  const targetLabs = targetColors.map(c => rgbToLab(c[0], c[1], c[2]));
+
+  function applyColor(indices, labs, targetLab) {
+    const [tL, tA, tB] = targetLab;
     let avgL = 0;
-    for (const lab of garmentLabs) avgL += lab[0];
-    avgL /= garmentLabs.length;
+    for (const lab of labs) avgL += lab[0];
+    avgL = labs.length > 0 ? avgL / labs.length : 50;
     const lScale = avgL > 1 ? tL / avgL : 0;
 
-    for (let j = 0; j < garmentIndices.length; j++) {
-      const idx = garmentIndices[j] * 3;
-      const origL = garmentLabs[j][0];
-      const newL = Math.max(0, Math.min(100, origL * lScale));
+    for (let j = 0; j < indices.length; j++) {
+      const idx = indices[j] * 3;
+      const newL = Math.max(0, Math.min(100, labs[j][0] * lScale));
       const [nR, nG, nB] = labToRgb(newL, tA, tB);
       output[idx] = nR; output[idx + 1] = nG; output[idx + 2] = nB;
     }
+  }
+
+  if (targetColors.length === 1) {
+    applyColor(garmentIndices, garmentLabs, targetLabs[0]);
   } else {
-    const garmentAs = garmentLabs.map(l => l[1]);
-    const garmentBs = garmentLabs.map(l => l[2]);
-    let meanA = 0, meanB = 0;
-    for (let j = 0; j < garmentLabs.length; j++) {
-      meanA += garmentAs[j]; meanB += garmentBs[j];
-    }
-    meanA /= garmentLabs.length; meanB /= garmentLabs.length;
+    // Find the dominant garment color by binning chrominance
+    let domA = 0, domB = 0;
+    for (const lab of garmentLabs) { domA += lab[1]; domB += lab[2]; }
+    domA /= garmentLabs.length; domB /= garmentLabs.length;
 
-    const groups = garmentIndices.map((gi, j) => {
+    // Separate by chrominance distance from dominant — use high threshold
+    // to keep most garment pixels in the primary group
+    const chromaThreshold = 20;
+    const g1Idx = [], g1Lab = [], g2Idx = [], g2Lab = [];
+    for (let j = 0; j < garmentIndices.length; j++) {
       const lab = garmentLabs[j];
-      const distFromMean = Math.sqrt((lab[1] - meanA) ** 2 + (lab[2] - meanB) ** 2);
-      return { gi, j, lab, distFromMean };
-    });
-
-    const chromaThreshold = 12;
-    const group1 = groups.filter(g => g.distFromMean <= chromaThreshold);
-    const group2 = groups.filter(g => g.distFromMean > chromaThreshold);
-
-    function applyLabGroup(group, targetLab) {
-      const [tL, tA, tB] = targetLab;
-      let avgL = 0;
-      for (const g of group) avgL += g.lab[0];
-      avgL = group.length > 0 ? avgL / group.length : 50;
-      const lScale = avgL > 1 ? tL / avgL : 0;
-
-      for (const g of group) {
-        const idx = g.gi * 3;
-        const newL = Math.max(0, Math.min(100, g.lab[0] * lScale));
-        const [nR, nG, nB] = labToRgb(newL, tA, tB);
-        output[idx] = nR; output[idx + 1] = nG; output[idx + 2] = nB;
+      const dist = Math.sqrt((lab[1] - domA) ** 2 + (lab[2] - domB) ** 2);
+      if (dist <= chromaThreshold) {
+        g1Idx.push(garmentIndices[j]); g1Lab.push(lab);
+      } else {
+        g2Idx.push(garmentIndices[j]); g2Lab.push(lab);
       }
     }
 
-    applyLabGroup(group1.length >= group2.length ? group1 : group2, targetLabs[0]);
-    const secondary = group1.length >= group2.length ? group2 : group1;
+    // Primary group = larger group, secondary = smaller
+    const [primIdx, primLab] = g1Idx.length >= g2Idx.length ? [g1Idx, g1Lab] : [g2Idx, g2Lab];
+    const [secIdx, secLab] = g1Idx.length >= g2Idx.length ? [g2Idx, g2Lab] : [g1Idx, g1Lab];
 
-    if (targetColors.length === 2) {
-      applyLabGroup(secondary, targetLabs[1]);
-    } else if (targetColors.length >= 3 && secondary.length > 0) {
-      let sMeanA = 0, sMeanB = 0;
-      for (const g of secondary) { sMeanA += g.lab[1]; sMeanB += g.lab[2]; }
-      sMeanA /= secondary.length; sMeanB /= secondary.length;
-      const g2a = secondary.filter(g =>
-        Math.sqrt((g.lab[1] - sMeanA) ** 2 + (g.lab[2] - sMeanB) ** 2) <= chromaThreshold);
-      const g2b = secondary.filter(g =>
-        Math.sqrt((g.lab[1] - sMeanA) ** 2 + (g.lab[2] - sMeanB) ** 2) > chromaThreshold);
-      applyLabGroup(g2a.length >= g2b.length ? g2a : g2b, targetLabs[1]);
-      applyLabGroup(g2a.length >= g2b.length ? g2b : g2a, targetLabs[2]);
+    applyColor(primIdx, primLab, targetLabs[0]);
+
+    if (targetColors.length === 2 && secIdx.length > 0) {
+      applyColor(secIdx, secLab, targetLabs[1]);
+    } else if (targetColors.length >= 3 && secIdx.length > 0) {
+      let sA = 0, sB = 0;
+      for (const lab of secLab) { sA += lab[1]; sB += lab[2]; }
+      sA /= secLab.length; sB /= secLab.length;
+      const s1Idx = [], s1Lab = [], s2Idx = [], s2Lab = [];
+      for (let j = 0; j < secIdx.length; j++) {
+        const d = Math.sqrt((secLab[j][1] - sA) ** 2 + (secLab[j][2] - sB) ** 2);
+        if (d <= chromaThreshold) { s1Idx.push(secIdx[j]); s1Lab.push(secLab[j]); }
+        else { s2Idx.push(secIdx[j]); s2Lab.push(secLab[j]); }
+      }
+      applyColor(s1Idx.length >= s2Idx.length ? s1Idx : s2Idx,
+                  s1Idx.length >= s2Idx.length ? s1Lab : s2Lab, targetLabs[1]);
+      applyColor(s1Idx.length >= s2Idx.length ? s2Idx : s1Idx,
+                  s1Idx.length >= s2Idx.length ? s2Lab : s1Lab, targetLabs[2]);
     }
   }
 
