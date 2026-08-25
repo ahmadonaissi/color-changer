@@ -357,7 +357,8 @@
     }
 
     const name = $('#pieceName').value.trim() || `Piece ${queue.length + 1}`;
-    enqueueJob(name, currentImageSrc, [...scannedColors], [...markerPoints]);
+    const quality = $('#qualityLevel').value;
+    enqueueJob(name, currentImageSrc, [...scannedColors], [...markerPoints], quality);
     resetWorkspace();
   });
 
@@ -380,10 +381,10 @@
     if (socket && mode === 'paired') socket.emit('colors-update', { roomId, colors: [] });
   }
 
-  function enqueueJob(name, imageSrc, colors, markers) {
+  function enqueueJob(name, imageSrc, colors, markers, quality) {
     const job = {
       id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
-      name, imageSrc, colors, markers,
+      name, imageSrc, colors, markers, quality: quality || 'medium',
       status: 'pending', result: null, enhanced: false
     };
     queue.push(job);
@@ -417,7 +418,7 @@
         const resp = await fetch('/api/recolor', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ image: smallImage, colors: job.colors })
+          body: JSON.stringify({ image: smallImage, colors: job.colors, quality: job.quality })
         });
 
         if (!resp.ok) {

@@ -172,7 +172,7 @@ function extractOpenAIResult(response) {
   return null;
 }
 
-async function recolorWithSkinRemoval(openai, originalBuffer, prompt) {
+async function recolorWithSkinRemoval(openai, originalBuffer, prompt, aiQuality) {
   const sharp = require('sharp');
   const OpenAI = require('openai');
 
@@ -210,7 +210,7 @@ async function recolorWithSkinRemoval(openai, originalBuffer, prompt) {
     model: 'gpt-image-1',
     image: imageFile,
     prompt,
-    quality: 'low',
+    quality: aiQuality,
     size: '1024x1024',
   });
 
@@ -260,9 +260,10 @@ async function recolorWithSkinRemoval(openai, originalBuffer, prompt) {
   return 'data:image/png;base64,' + finalBuf.toString('base64');
 }
 
-async function recolorWithOpenAI(image, colors) {
+async function recolorWithOpenAI(image, colors, quality) {
   const OpenAI = require('openai');
   const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  const aiQuality = ['low', 'medium', 'high'].includes(quality) ? quality : 'medium';
 
   const mimeMatch = image.match(/^data:(image\/\w+);base64,/);
   const mimeType = mimeMatch ? mimeMatch[1] : 'image/png';
@@ -280,7 +281,7 @@ async function recolorWithOpenAI(image, colors) {
       model: 'gpt-image-1',
       image: imageFile,
       prompt,
-      quality: 'low',
+      quality: aiQuality,
       size: '1024x1024',
     });
     const resultBuf = extractOpenAIResult(response);
@@ -298,7 +299,7 @@ async function recolorWithOpenAI(image, colors) {
     if (!isSafety) throw err;
     console.log('Safety rejection detected — retrying with skin removal...');
     try {
-      return await recolorWithSkinRemoval(openai, buffer, prompt);
+      return await recolorWithSkinRemoval(openai, buffer, prompt, aiQuality);
     } catch (retryErr) {
       console.error('Skin removal retry also failed:', retryErr.message);
       throw new Error('Image was rejected by OpenAI safety filter. Try using a flat-lay or mannequin photo instead of an on-model photo.');
@@ -363,7 +364,7 @@ async function recolorWithReplicate(image, colors) {
 }
 
 app.post('/api/recolor', async (req, res) => {
-  const { image, colors } = req.body;
+  const { image, colors, quality } = req.body;
 
   if (!image) return res.status(400).json({ error: 'No image provided' });
   if (!colors || !colors.length) return res.status(400).json({ error: 'No colors provided' });
@@ -372,7 +373,7 @@ app.post('/api/recolor', async (req, res) => {
     let result;
     if (process.env.OPENAI_API_KEY) {
       console.log('Using OpenAI for recoloring');
-      result = await recolorWithOpenAI(image, colors);
+      result = await recolorWithOpenAI(image, colors, quality);
     } else if (process.env.REPLICATE_API_TOKEN) {
       console.log('Using Replicate for recoloring');
       result = await recolorWithReplicate(image, colors);

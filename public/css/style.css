@@ -536,6 +536,28 @@ button:active { transform: scale(0.97); }
 }
 .submit-bar input[type="text"]:focus { border-color: var(--accent); }
 
+.quality-select {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.quality-select label {
+  font-size: 0.78rem;
+  color: var(--text2);
+}
+.quality-select select {
+  padding: 8px 10px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: 0.82rem;
+  outline: none;
+  cursor: pointer;
+}
+.quality-select select:focus { border-color: var(--accent); }
+
 /* ---- SAVE FOLDER MODAL ---- */
 .modal-overlay {
   position: fixed;
