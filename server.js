@@ -172,7 +172,105 @@ function extractOpenAIResult(response) {
   return null;
 }
 
-async function recolorWithSkinRemoval(openai, originalBuffer, prompt, aiQuality) {
+// ---- COLOR CORRECTION ----
+function rgbToHsl(r, g, b) {
+  r /= 255; g /= 255; b /= 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b);
+  const l = (max + min) / 2;
+  if (max === min) return [0, 0, l];
+  const d = max - min;
+  const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+  let h;
+  if (max === r) h = ((g - b) / d + (g < b ? 6 : 0)) / 6;
+  else if (max === g) h = ((b - r) / d + 2) / 6;
+  else h = ((r - g) / d + 4) / 6;
+  return [h, s, l];
+}
+
+function hslToRgb(h, s, l) {
+  if (s === 0) { const v = Math.round(l * 255); return [v, v, v]; }
+  const hue2rgb = (p, q, t) => {
+    if (t < 0) t += 1; if (t > 1) t -= 1;
+    if (t < 1/6) return p + (q - p) * 6 * t;
+    if (t < 1/2) return q;
+    if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;
+    return p;
+  };
+  const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+  const p = 2 * l - q;
+  return [
+    Math.round(hue2rgb(p, q, h + 1/3) * 255),
+    Math.round(hue2rgb(p, q, h) * 255),
+    Math.round(hue2rgb(p, q, h - 1/3) * 255)
+  ];
+}
+
+function colorDistance(r1, g1, b1, r2, g2, b2) {
+  return Math.sqrt((r1-r2)**2 + (g1-g2)**2 + (b1-b2)**2);
+}
+
+async function correctColors(originalBuffer, resultBuffer, targetColors) {
+  const sharp = require('sharp');
+
+  const origMeta = await sharp(originalBuffer).metadata();
+  const resMeta = await sharp(resultBuffer).metadata();
+
+  const w = resMeta.width;
+  const h = resMeta.height;
+
+  const origPixels = await sharp(originalBuffer)
+    .resize(w, h)
+    .removeAlpha()
+    .raw()
+    .toBuffer();
+
+  const resPixels = await sharp(resultBuffer)
+    .removeAlpha()
+    .raw()
+    .toBuffer();
+
+  const output = Buffer.from(resPixels);
+  const threshold = 30;
+
+  const targetHsls = targetColors.map(c => rgbToHsl(c[0], c[1], c[2]));
+
+  for (let i = 0; i < w * h; i++) {
+    const idx = i * 3;
+    const oR = origPixels[idx], oG = origPixels[idx+1], oB = origPixels[idx+2];
+    const rR = resPixels[idx], rG = resPixels[idx+1], rB = resPixels[idx+2];
+
+    const dist = colorDistance(oR, oG, oB, rR, rG, rB);
+
+    if (dist > threshold) {
+      const [rH, rS, rL] = rgbToHsl(rR, rG, rB);
+
+      if (targetColors.length === 1) {
+        const [tH, tS] = targetHsls[0];
+        const [nR, nG, nB] = hslToRgb(tH, tS, rL);
+        output[idx] = nR; output[idx+1] = nG; output[idx+2] = nB;
+      } else {
+        let bestIdx = 0;
+        let bestDist = Infinity;
+        for (let t = 0; t < targetHsls.length; t++) {
+          const [tH, tS, tL] = targetHsls[t];
+          const hueDiff = Math.min(Math.abs(rH - tH), 1 - Math.abs(rH - tH));
+          const satDiff = Math.abs(rS - tS);
+          const d = hueDiff * 2 + satDiff;
+          if (d < bestDist) { bestDist = d; bestIdx = t; }
+        }
+        const [tH, tS] = targetHsls[bestIdx];
+        const [nR, nG, nB] = hslToRgb(tH, tS, rL);
+        output[idx] = nR; output[idx+1] = nG; output[idx+2] = nB;
+      }
+    }
+  }
+
+  return sharp(output, { raw: { width: w, height: h, channels: 3 } })
+    .png()
+    .toBuffer();
+}
+
+async function recolorWithSkinRemoval(openai, originalBuffer, prompt, aiQuality, targetColors) {
   const sharp = require('sharp');
   const OpenAI = require('openai');
 
@@ -251,11 +349,16 @@ async function recolorWithSkinRemoval(openai, originalBuffer, prompt, aiQuality)
   const left = Math.round((1024 - scaledW) / 2);
   const top = Math.round((1024 - scaledH) / 2);
 
-  const finalBuf = await sharp(composite, { raw: { width: 1024, height: 1024, channels: 3 } })
+  let finalBuf = await sharp(composite, { raw: { width: 1024, height: 1024, channels: 3 } })
     .extract({ left, top, width: scaledW, height: scaledH })
     .resize(origW, origH)
     .png()
     .toBuffer();
+
+  if (targetColors && targetColors.length > 0) {
+    console.log('Applying color correction (skin removal path)...');
+    finalBuf = await correctColors(originalBuffer, finalBuf, targetColors);
+  }
 
   return 'data:image/png;base64,' + finalBuf.toString('base64');
 }
@@ -284,22 +387,27 @@ async function recolorWithOpenAI(image, colors, quality) {
       quality: aiQuality,
       size: '1024x1024',
     });
-    const resultBuf = extractOpenAIResult(response);
-    if (resultBuf) return 'data:image/png;base64,' + resultBuf.toString('base64');
-    const rd = response.data[0];
-    if (rd.url) {
-      const resp = await fetch(rd.url);
-      const buf = Buffer.from(await resp.arrayBuffer());
-      return 'data:image/png;base64,' + buf.toString('base64');
+    let resultBuf = extractOpenAIResult(response);
+    if (!resultBuf) {
+      const rd = response.data[0];
+      if (rd.url) {
+        const resp = await fetch(rd.url);
+        resultBuf = Buffer.from(await resp.arrayBuffer());
+      } else {
+        throw new Error('No image in OpenAI response');
+      }
     }
-    throw new Error('No image in OpenAI response');
+
+    console.log('Applying color correction...');
+    const corrected = await correctColors(buffer, resultBuf, colors);
+    return 'data:image/png;base64,' + corrected.toString('base64');
   } catch (err) {
     console.log('OpenAI error:', err.status, err.message);
     const isSafety = err.status === 400 && err.message && err.message.includes('safety');
     if (!isSafety) throw err;
     console.log('Safety rejection detected — retrying with skin removal...');
     try {
-      return await recolorWithSkinRemoval(openai, buffer, prompt, aiQuality);
+      return await recolorWithSkinRemoval(openai, buffer, prompt, aiQuality, colors);
     } catch (retryErr) {
       console.error('Skin removal retry also failed:', retryErr.message);
       throw new Error('Image was rejected by OpenAI safety filter. Try using a flat-lay or mannequin photo instead of an on-model photo.');
