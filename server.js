@@ -471,25 +471,174 @@ async function recolorWithReplicate(image, colors) {
   return 'data:image/png;base64,' + resultBuffer.toString('base64');
 }
 
+// ---- LAB COLOR SPACE CONVERSION ----
+function rgbToLab(r, g, b) {
+  r /= 255; g /= 255; b /= 255;
+  r = r > 0.04045 ? Math.pow((r + 0.055) / 1.055, 2.4) : r / 12.92;
+  g = g > 0.04045 ? Math.pow((g + 0.055) / 1.055, 2.4) : g / 12.92;
+  b = b > 0.04045 ? Math.pow((b + 0.055) / 1.055, 2.4) : b / 12.92;
+  let x = (r * 0.4124564 + g * 0.3575761 + b * 0.1804375) / 0.95047;
+  let y = (r * 0.2126729 + g * 0.7151522 + b * 0.0721750);
+  let z = (r * 0.0193339 + g * 0.1191920 + b * 0.9503041) / 1.08883;
+  const f = v => v > 0.008856 ? Math.cbrt(v) : (7.787 * v) + 16 / 116;
+  x = f(x); y = f(y); z = f(z);
+  return [116 * y - 16, 500 * (x - y), 200 * (y - z)];
+}
+
+function labToRgb(L, a, b) {
+  let y = (L + 16) / 116;
+  let x = a / 500 + y;
+  let z = y - b / 200;
+  const finv = v => {
+    const v3 = v * v * v;
+    return v3 > 0.008856 ? v3 : (v - 16 / 116) / 7.787;
+  };
+  x = finv(x) * 0.95047;
+  y = finv(y);
+  z = finv(z) * 1.08883;
+  let r = x * 3.2404542 + y * -1.5371385 + z * -0.4985314;
+  let g = x * -0.9692660 + y * 1.8760108 + z * 0.0415560;
+  let bl = x * 0.0556434 + y * -0.2040259 + z * 1.0572252;
+  const gamma = v => v > 0.0031308 ? 1.055 * Math.pow(v, 1 / 2.4) - 0.055 : 12.92 * v;
+  return [
+    Math.max(0, Math.min(255, Math.round(gamma(r) * 255))),
+    Math.max(0, Math.min(255, Math.round(gamma(g) * 255))),
+    Math.max(0, Math.min(255, Math.round(gamma(bl) * 255)))
+  ];
+}
+
+// ---- PROGRAMMATIC RECOLOR (LAB, no AI) ----
+async function programmaticRecolor(imageBuffer, targetColors) {
+  const sharp = require('sharp');
+  const meta = await sharp(imageBuffer).metadata();
+  const w = meta.width, h = meta.height;
+  const pixels = await sharp(imageBuffer).removeAlpha().raw().toBuffer();
+  const output = Buffer.from(pixels);
+
+  const sampleSize = Math.min(15, Math.floor(Math.min(w, h) * 0.04));
+  let bgR = 0, bgG = 0, bgB = 0, bgCount = 0;
+  for (let y = 0; y < sampleSize; y++) {
+    for (let x = 0; x < sampleSize; x++) {
+      for (const idx of [
+        (y * w + x) * 3,
+        (y * w + (w - 1 - x)) * 3,
+        ((h - 1 - y) * w + x) * 3,
+        ((h - 1 - y) * w + (w - 1 - x)) * 3
+      ]) {
+        bgR += pixels[idx]; bgG += pixels[idx + 1]; bgB += pixels[idx + 2];
+        bgCount++;
+      }
+    }
+  }
+  bgR = Math.round(bgR / bgCount);
+  bgG = Math.round(bgG / bgCount);
+  bgB = Math.round(bgB / bgCount);
+
+  const bgLab = rgbToLab(bgR, bgG, bgB);
+  const targetLabs = targetColors.map(c => rgbToLab(c[0], c[1], c[2]));
+
+  const garmentIndices = [];
+  const garmentLabs = [];
+
+  for (let i = 0; i < w * h; i++) {
+    const idx = i * 3;
+    const r = pixels[idx], g = pixels[idx + 1], b = pixels[idx + 2];
+
+    const lab = rgbToLab(r, g, b);
+    const bgDist = Math.sqrt((lab[0]-bgLab[0])**2 + (lab[1]-bgLab[1])**2 + (lab[2]-bgLab[2])**2);
+    if (bgDist < 15) continue;
+    if (isSkinPixel(r, g, b)) continue;
+
+    garmentIndices.push(i);
+    garmentLabs.push(lab);
+  }
+
+  if (garmentIndices.length === 0) {
+    return sharp(output, { raw: { width: w, height: h, channels: 3 } }).png().toBuffer();
+  }
+
+  if (targetColors.length === 1) {
+    const [tL, tA, tB] = targetLabs[0];
+    let avgL = 0;
+    for (const lab of garmentLabs) avgL += lab[0];
+    avgL /= garmentLabs.length;
+    const lScale = avgL > 1 ? tL / avgL : 0;
+
+    for (let j = 0; j < garmentIndices.length; j++) {
+      const idx = garmentIndices[j] * 3;
+      const origL = garmentLabs[j][0];
+      const newL = Math.max(0, Math.min(100, origL * lScale));
+      const [nR, nG, nB] = labToRgb(newL, tA, tB);
+      output[idx] = nR; output[idx + 1] = nG; output[idx + 2] = nB;
+    }
+  } else {
+    const garmentAs = garmentLabs.map(l => l[1]);
+    const garmentBs = garmentLabs.map(l => l[2]);
+    let meanA = 0, meanB = 0;
+    for (let j = 0; j < garmentLabs.length; j++) {
+      meanA += garmentAs[j]; meanB += garmentBs[j];
+    }
+    meanA /= garmentLabs.length; meanB /= garmentLabs.length;
+
+    const groups = garmentIndices.map((gi, j) => {
+      const lab = garmentLabs[j];
+      const distFromMean = Math.sqrt((lab[1] - meanA) ** 2 + (lab[2] - meanB) ** 2);
+      return { gi, j, lab, distFromMean };
+    });
+
+    const chromaThreshold = 12;
+    const group1 = groups.filter(g => g.distFromMean <= chromaThreshold);
+    const group2 = groups.filter(g => g.distFromMean > chromaThreshold);
+
+    function applyLabGroup(group, targetLab) {
+      const [tL, tA, tB] = targetLab;
+      let avgL = 0;
+      for (const g of group) avgL += g.lab[0];
+      avgL = group.length > 0 ? avgL / group.length : 50;
+      const lScale = avgL > 1 ? tL / avgL : 0;
+
+      for (const g of group) {
+        const idx = g.gi * 3;
+        const newL = Math.max(0, Math.min(100, g.lab[0] * lScale));
+        const [nR, nG, nB] = labToRgb(newL, tA, tB);
+        output[idx] = nR; output[idx + 1] = nG; output[idx + 2] = nB;
+      }
+    }
+
+    applyLabGroup(group1.length >= group2.length ? group1 : group2, targetLabs[0]);
+    const secondary = group1.length >= group2.length ? group2 : group1;
+
+    if (targetColors.length === 2) {
+      applyLabGroup(secondary, targetLabs[1]);
+    } else if (targetColors.length >= 3 && secondary.length > 0) {
+      let sMeanA = 0, sMeanB = 0;
+      for (const g of secondary) { sMeanA += g.lab[1]; sMeanB += g.lab[2]; }
+      sMeanA /= secondary.length; sMeanB /= secondary.length;
+      const g2a = secondary.filter(g =>
+        Math.sqrt((g.lab[1] - sMeanA) ** 2 + (g.lab[2] - sMeanB) ** 2) <= chromaThreshold);
+      const g2b = secondary.filter(g =>
+        Math.sqrt((g.lab[1] - sMeanA) ** 2 + (g.lab[2] - sMeanB) ** 2) > chromaThreshold);
+      applyLabGroup(g2a.length >= g2b.length ? g2a : g2b, targetLabs[1]);
+      applyLabGroup(g2a.length >= g2b.length ? g2b : g2a, targetLabs[2]);
+    }
+  }
+
+  return sharp(output, { raw: { width: w, height: h, channels: 3 } }).png().toBuffer();
+}
+
 app.post('/api/recolor', async (req, res) => {
-  const { image, colors, quality } = req.body;
+  const { image, colors } = req.body;
 
   if (!image) return res.status(400).json({ error: 'No image provided' });
   if (!colors || !colors.length) return res.status(400).json({ error: 'No colors provided' });
 
   try {
-    let result;
-    if (process.env.OPENAI_API_KEY) {
-      console.log('Using OpenAI for recoloring');
-      result = await recolorWithOpenAI(image, colors, quality);
-    } else if (process.env.REPLICATE_API_TOKEN) {
-      console.log('Using Replicate for recoloring');
-      result = await recolorWithReplicate(image, colors);
-    } else {
-      return res.status(400).json({ error: 'No AI provider configured' });
-    }
+    const base64Data = image.replace(/^data:image\/\w+;base64,/, '');
+    const buffer = Buffer.from(base64Data, 'base64');
 
-    res.json({ result });
+    console.log('Using LAB color space recoloring');
+    const resultBuf = await programmaticRecolor(buffer, colors);
+    res.json({ result: 'data:image/png;base64,' + resultBuf.toString('base64') });
   } catch (err) {
     console.error('Recolor error:', err.message);
     console.error('Stack:', err.stack);
