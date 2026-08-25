@@ -5,7 +5,6 @@ const QRCode = require('qrcode');
 const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
-const os = require('os');
 
 const app = express();
 const server = http.createServer(app);
@@ -137,6 +136,9 @@ async function recolorWithOpenAI(image, colors) {
   const OpenAI = require('openai');
   const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
+  const mimeMatch = image.match(/^data:(image\/\w+);base64,/);
+  const mimeType = mimeMatch ? mimeMatch[1] : 'image/png';
+  const ext = mimeType === 'image/jpeg' ? 'jpg' : mimeType === 'image/webp' ? 'webp' : 'png';
   const base64Data = image.replace(/^data:image\/\w+;base64,/, '');
   const buffer = Buffer.from(base64Data, 'base64');
 
@@ -157,31 +159,26 @@ async function recolorWithOpenAI(image, colors) {
 
   console.log('OpenAI prompt:', prompt);
 
-  const tempPath = path.join(os.tmpdir(), `garment-${Date.now()}.png`);
-  fs.writeFileSync(tempPath, buffer);
+  const imageFile = await openai.toFile(buffer, `garment.${ext}`, { type: mimeType });
 
-  try {
-    const response = await openai.images.edit({
-      model: 'gpt-image-1',
-      image: fs.createReadStream(tempPath),
-      prompt,
-      size: '1024x1024',
-    });
+  const response = await openai.images.edit({
+    model: 'gpt-image-1',
+    image: imageFile,
+    prompt,
+    size: '1024x1024',
+  });
 
-    const resultData = response.data[0];
+  const resultData = response.data[0];
 
-    if (resultData.b64_json) {
-      return 'data:image/png;base64,' + resultData.b64_json;
-    } else if (resultData.url) {
-      const resp = await fetch(resultData.url);
-      const buf = Buffer.from(await resp.arrayBuffer());
-      return 'data:image/png;base64,' + buf.toString('base64');
-    }
-
-    throw new Error('No image in OpenAI response');
-  } finally {
-    try { fs.unlinkSync(tempPath); } catch (e) {}
+  if (resultData.b64_json) {
+    return 'data:image/png;base64,' + resultData.b64_json;
+  } else if (resultData.url) {
+    const resp = await fetch(resultData.url);
+    const buf = Buffer.from(await resp.arrayBuffer());
+    return 'data:image/png;base64,' + buf.toString('base64');
   }
+
+  throw new Error('No image in OpenAI response');
 }
 
 // ---- REPLICATE RECOLOR (fallback) ----
