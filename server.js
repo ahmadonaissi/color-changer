@@ -666,22 +666,78 @@ async function programmaticRecolor(imageBuffer, targetColors) {
   return sharp(output, { raw: { width: w, height: h, channels: 3 } }).png().toBuffer();
 }
 
+async function recolorWithGPT4o(imageDataUri, colors, quality) {
+  const OpenAI = require('openai');
+  const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+  const colorDescs = colors.map(c => {
+    const hex = rgbToHex(c[0], c[1], c[2]);
+    const name = rgbToColorName(c[0], c[1], c[2]);
+    return { hex, name };
+  });
+
+  let colorInstruction;
+  if (colorDescs.length === 1) {
+    colorInstruction = `I scanned one color. The first color is the primary color: ${colorDescs[0].name} (${colorDescs[0].hex}). Change the entire garment color to exactly this color.`;
+  } else if (colorDescs.length === 2) {
+    colorInstruction = `I scanned two colors. The first color is the primary color: ${colorDescs[0].name} (${colorDescs[0].hex}). The second color is the secondary color: ${colorDescs[1].name} (${colorDescs[1].hex}). Change the dominant/main garment area to the primary color and any secondary areas (like trim, waistband, stripes, contrasting panels) to the secondary color.`;
+  } else {
+    colorInstruction = `I scanned three colors. The first color is the primary color: ${colorDescs[0].name} (${colorDescs[0].hex}). The second color is the secondary color: ${colorDescs[1].name} (${colorDescs[1].hex}). The third color is the accent color: ${colorDescs[2].name} (${colorDescs[2].hex}). Change the dominant/main garment area to the primary color, secondary areas to the secondary color, and small accent details to the accent color.`;
+  }
+
+  const prompt = `I'm giving you an image of a model wearing a piece of clothing. ${colorInstruction}
+
+Change ONLY the color of the garment without touching the details of the product, skin, hair, background, or any other details in the image. The image must look identical except for the garment color. The request is strict and no improvisation. Match the exact hex codes provided.`;
+
+  const aiQuality = quality === 'high' ? 'high' : quality === 'low' ? 'low' : 'medium';
+  console.log('GPT-4o prompt:', prompt);
+  console.log('Quality:', aiQuality);
+
+  const response = await openai.responses.create({
+    model: 'gpt-4o',
+    input: [
+      {
+        role: 'user',
+        content: [
+          { type: 'input_text', text: prompt },
+          { type: 'input_image', image_url: imageDataUri }
+        ]
+      }
+    ],
+    tools: [{ type: 'image_generation', quality: aiQuality }]
+  });
+
+  for (const item of response.output) {
+    if (item.type === 'image_generation_call') {
+      return 'data:image/png;base64,' + item.result;
+    }
+  }
+
+  throw new Error('GPT-4o did not generate an image. Response: ' + JSON.stringify(response.output.map(o => o.type)));
+}
+
 app.post('/api/recolor', async (req, res) => {
-  const { image, colors } = req.body;
+  const { image, colors, quality } = req.body;
 
   if (!image) return res.status(400).json({ error: 'No image provided' });
   if (!colors || !colors.length) return res.status(400).json({ error: 'No colors provided' });
 
-  try {
-    const base64Data = image.replace(/^data:image\/\w+;base64,/, '');
-    const buffer = Buffer.from(base64Data, 'base64');
+  if (!process.env.OPENAI_API_KEY) {
+    return res.status(500).json({ error: 'OPENAI_API_KEY not configured on server' });
+  }
 
-    console.log('Using LAB color space recoloring');
-    const resultBuf = await programmaticRecolor(buffer, colors);
-    res.json({ result: 'data:image/png;base64,' + resultBuf.toString('base64') });
+  try {
+    console.log('Using GPT-4o recoloring, quality:', quality || 'medium');
+    const result = await recolorWithGPT4o(image, colors, quality || 'medium');
+    res.json({ result });
   } catch (err) {
     console.error('Recolor error:', err.message);
     console.error('Stack:', err.stack);
+
+    const isSafety = err.message && err.message.includes('safety');
+    if (isSafety) {
+      return res.status(400).json({ error: 'Image was rejected by safety filter. Try using a flat-lay or mannequin photo instead of an on-model photo.' });
+    }
     res.status(500).json({ error: err.message });
   }
 });
